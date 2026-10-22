@@ -22,14 +22,24 @@
         <canvas id="screen" width="560" height="384" tabindex="0" aria-label="Apple II screen"></canvas>
         <p class="paused-label">Paused</p>
         <section id="rom-setup" class="rom-setup" aria-labelledby="rom-setup-title" hidden>
-          <h1 id="rom-setup-title">First, load the Apple IIe ROMs</h1>
+          <h1 id="rom-setup-title">First, choose your Apple and load its ROMs</h1>
           <p class="rom-setup-lead">
             The Apple can't switch on without the ROM chips Apple built into it. They are still under copyright, so they
             aren't included here: choose or drop your own ROM image files. They stay in this browser and are never sent
-            anywhere. The browser remembers them, so you only need to do this once.
+            anywhere. The browser remembers them, so you only need to do this once for each model.
+          </p>
+          <p class="setup-row machine-choice">
+            <label>
+              Machine
+              <select name="machine" aria-label="Machine">
+                <option value="iie" selected>Apple IIe (1983): 128K, 80 columns, double graphics</option>
+                <option value="iiplus">Apple II Plus (1979): Applesoft BASIC, 64K</option>
+                <option value="ii">Apple II (1977): Integer BASIC, 64K</option>
+              </select>
+            </label>
           </p>
           <ul class="rom-list">
-            <li data-rom="main">
+            <li data-rom="main" data-machines="iie">
               <p class="rom-heading"><strong>Apple IIe ROM</strong> <span class="rom-need">Required</span></p>
               <p class="rom-detail">
                 Applesoft BASIC, the Monitor and the built-in firmware: 16 KB (16,384 bytes), or the two 8 KB chips it
@@ -42,7 +52,7 @@
               </p>
               <p class="rom-status"></p>
             </li>
-            <li data-rom="video">
+            <li data-rom="video" data-machines="iie">
               <p class="rom-heading"><strong>Video ROM</strong> <span class="rom-need">Required</span></p>
               <p class="rom-detail">The characters on the screen, chip 342-0265 (or the original IIe's 342-0133). 4 KB (4,096 bytes).</p>
               <p class="rom-names">
@@ -50,7 +60,28 @@
               </p>
               <p class="rom-status"></p>
             </li>
-            <li data-rom="disk">
+            <li data-rom="plus" data-machines="iiplus">
+              <p class="rom-heading"><strong>Apple II Plus ROM</strong> <span class="rom-need">Required</span></p>
+              <p class="rom-detail">Applesoft BASIC and the Autostart Monitor. 12 KB (12,288 bytes).</p>
+              <p class="rom-names">Often named <code>Apple2_Plus.rom</code> or <code>apple2p.rom</code></p>
+              <p class="rom-status"></p>
+            </li>
+            <li data-rom="ii" data-machines="ii">
+              <p class="rom-heading"><strong>Apple II ROM</strong> <span class="rom-need">Required</span></p>
+              <p class="rom-detail">
+                Integer BASIC and the original Monitor. 12 KB (12,288 bytes). The Apple II starts in the Monitor: type
+                <code>C600G</code> and Return to boot a disk.
+              </p>
+              <p class="rom-names">Often named <code>Apple2.rom</code></p>
+              <p class="rom-status"></p>
+            </li>
+            <li data-rom="video2" data-machines="ii iiplus">
+              <p class="rom-heading"><strong>Character ROM</strong> <span class="rom-need">Required</span></p>
+              <p class="rom-detail">The Apple II's and II Plus's 64 characters, chip 341-0036. 2 KB (2,048 bytes).</p>
+              <p class="rom-names">Often named <code>Apple2_Video.rom</code></p>
+              <p class="rom-status"></p>
+            </li>
+            <li data-rom="disk" data-machines="ii iiplus iie">
               <p class="rom-heading"><strong>Disk II ROM</strong> <span class="rom-need">Required</span></p>
               <p class="rom-detail">The disk controller's boot ROM, chip 341-0027 (16 sectors). 256 bytes.</p>
               <p class="rom-names">Often named <code>DISK2.rom</code> or <code>341-0027-a.p5</code></p>
@@ -67,7 +98,7 @@
             <button type="button" class="primary" data-action="choose-roms">Choose ROM files...</button>
             <button type="button" data-action="start" disabled>Start the Apple</button>
             <button type="button" data-action="back" hidden>Back to the Apple</button>
-            <button type="button" data-action="forget-roms" hidden>Forget these ROMs</button>
+            <button type="button" data-action="forget-roms" hidden>Forget all ROMs</button>
           </div>
           <p class="rom-message" role="alert"></p>
           <p class="rom-storage-note"></p>
@@ -86,8 +117,8 @@
             Restart
           </button>
           <button type="button" data-action="fullscreen" title="Esc leaves full screen">Full screen</button>
-          <button type="button" data-action="change-roms" title="Add, replace or forget the IIe, video and Disk II ROMs">
-            System ROMs...
+          <button type="button" data-action="machine-setup" title="Apple II, II Plus or IIe, and their ROMs">
+            Machine setup...
           </button>
           <select name="monitor" aria-label="Monitor">
             <option value="color" selected>Colour monitor</option>
@@ -195,7 +226,7 @@
               <option value="1">Gamepad 2</option>
             </select>
           </span>
-          <label title="Letters type in capitals, as most Apple II software expects; the Caps Lock key switches it">
+          <label title="Letters type in capitals, as most Apple II software expects; the Caps Lock key switches it (the II and II Plus only have capitals)">
             <input type="checkbox" name="caps-lock" checked /> Caps Lock
           </label>
         </div>

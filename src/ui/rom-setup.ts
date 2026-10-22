@@ -1,5 +1,8 @@
+import type { Model } from '../apple2';
 import { isZip, readZip } from '../disk/zip';
 import {
+  MODEL_NAMES,
+  MODEL_ROMS,
   NotARom,
   ROM_FILE_SIZES,
   hasRequiredRoms,
@@ -16,7 +19,7 @@ import {
 
 /** ROM collections often hold a zip per machine, so zips are opened this many levels down. */
 const MAX_ZIP_DEPTH = 2;
-const SLOTS: readonly RomSlot[] = ['main', 'video', 'disk'];
+const SLOTS: readonly RomSlot[] = ['main', 'video', 'plus', 'ii', 'video2', 'disk'];
 
 const isMacMetadata = (name: string) => name.split('/').pop()!.startsWith('.') || name.startsWith('__MACOSX/');
 
@@ -36,21 +39,28 @@ async function expand(file: File, depth = 0): Promise<{ files: File[]; inZip: bo
 }
 
 export interface RomSetupOptions {
+  /** The machine chosen to begin with. */
+  model: Model;
   /** Opened from a running Apple: offers Back (resolves null) and restarts rather than starts. */
   whileRunning?: boolean;
 }
 
+export interface MachineSetup {
+  model: Model;
+  roms: SystemRoms;
+}
+
 /**
- * Shows the ROM setup panel in place of the screen until the ROMs are loaded
- * and the user presses Start. Resolves with the ROMs to use, or null if the
- * user went back to the running Apple instead.
+ * Shows the machine setup panel in place of the screen until the chosen
+ * model's ROMs are loaded and the user presses Start. Resolves with the model
+ * and the ROMs, or null if the user went back to the running Apple instead.
  */
-export function askForRoms(
+export function askForMachine(
   root: HTMLElement,
   store: SystemRomStore,
   initial: SystemRoms,
-  options: RomSetupOptions = {},
-): Promise<SystemRoms | null> {
+  options: RomSetupOptions,
+): Promise<MachineSetup | null> {
   const query = <T extends HTMLElement>(selector: string) => {
     const element = root.querySelector<T>(selector);
     if (!element) throw new Error(`ROM setup is missing ${selector}`);
@@ -61,8 +71,10 @@ export function askForRoms(
   const backButton = query<HTMLButtonElement>('[data-action="back"]');
   const forgetButton = query<HTMLButtonElement>('[data-action="forget-roms"]');
   const message = query<HTMLElement>('.rom-message');
-  query<HTMLElement>('h1').textContent = options.whileRunning ? 'Change the Apple IIe ROMs' : 'First, load the Apple IIe ROMs';
-  startButton.textContent = options.whileRunning ? 'Restart the Apple with these ROMs' : 'Start the Apple';
+  const machine = query<HTMLSelectElement>('select[name="machine"]');
+  machine.value = options.model;
+  query<HTMLElement>('h1').textContent = options.whileRunning ? 'Machine setup' : 'First, choose your Apple and load its ROMs';
+  const model = () => machine.value as Model;
   backButton.hidden = !options.whileRunning;
   message.textContent = '';
   const roms: SystemRoms = { ...initial };
@@ -72,7 +84,7 @@ export function askForRoms(
   const describe = (slot: RomSlot): string => {
     if (slot === 'main') {
       const main = mainRom(roms);
-      if (main) return `Loaded: ${modelName(main)} (${roms.main?.name ?? `${roms.mainCD!.name} + ${roms.mainEF!.name}`})`;
+      if (main) return `Loaded: ${modelName('iie', main)} (${roms.main?.name ?? `${roms.mainCD!.name} + ${roms.mainEF!.name}`})`;
       const chip = roms.mainCD ?? roms.mainEF;
       return chip ? `Has ${chip.name}; add the other chip (${roms.mainCD ? '$E000-$FFFF' : '$C000-$DFFF'}) too` : 'Not loaded yet';
     }
@@ -81,13 +93,16 @@ export function askForRoms(
   };
 
   const render = () => {
+    const name = MODEL_NAMES[model()];
+    startButton.textContent = options.whileRunning ? `Restart as the ${name}` : `Start the ${name}`;
     for (const slot of SLOTS) {
       const row = query<HTMLElement>(`[data-rom="${slot}"]`);
+      row.hidden = !MODEL_ROMS[model()].includes(slot);
       const warning = slot === 'main' ? (warnings.get('main') ?? warnings.get('mainCD') ?? warnings.get('mainEF')) : warnings.get(slot);
       row.dataset.state = hasRom(roms, slot) ? (warning ? 'warning' : 'loaded') : 'missing';
       row.querySelector<HTMLElement>('.rom-status')!.textContent = describe(slot) + (warning && hasRom(roms, slot) ? ` (${warning})` : '');
     }
-    startButton.disabled = !hasRequiredRoms(roms);
+    startButton.disabled = !hasRequiredRoms(roms, model());
     forgetButton.hidden = !Object.keys(roms).length;
   };
 
@@ -102,13 +117,13 @@ export function askForRoms(
           try {
             const rom = identifyRom(entry.name, new Uint8Array(await entry.arrayBuffer()));
             // In a collection, only Apple's own chips count: plenty of other files are the same sizes.
-            if (inZip && rom.warning && !(rom.kind === 'main' || rom.kind === 'disk')) continue;
+            if (inZip && rom.warning && !['main', 'plus', 'ii', 'disk'].includes(rom.kind)) continue;
             found.push(rom);
           } catch (error) {
             if (!(inZip && error instanceof NotARom)) errors.push(error instanceof Error ? error.message : String(error));
           }
         }
-        if (inZip && found.length === before && errors.length === 0) errors.push(`${file.name} has no Apple IIe ROMs in it.`);
+        if (inZip && found.length === before && errors.length === 0) errors.push(`${file.name} has no Apple II ROMs in it.`);
       } catch (error) {
         errors.push(error instanceof Error ? error.message : String(error));
       }
@@ -131,6 +146,7 @@ export function askForRoms(
   };
 
   query<HTMLButtonElement>('[data-action="choose-roms"]').addEventListener('click', () => fileInput.click(), { signal: listeners.signal });
+  machine.addEventListener('change', render, { signal: listeners.signal });
   fileInput.addEventListener(
     'change',
     () => {
@@ -205,13 +221,13 @@ export function askForRoms(
   root.scrollIntoView({ block: 'start' });
 
   return new Promise((resolve) => {
-    const close = (result: SystemRoms | null) => {
+    const close = (result: MachineSetup | null) => {
       listeners.abort();
       root.hidden = true;
       document.body.classList.remove('needs-roms');
       resolve(result);
     };
-    startButton.addEventListener('click', () => close(roms), { signal: listeners.signal });
+    startButton.addEventListener('click', () => close({ model: model(), roms }), { signal: listeners.signal });
     backButton.addEventListener('click', () => close(null), { signal: listeners.signal });
   });
 }

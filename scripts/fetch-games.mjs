@@ -70,6 +70,7 @@ for (const game of catalog.games) {
       licenseUrl,
       sourceUrl: game.sourceUrl,
       hint: game.hint,
+      requires: game.requires,
     });
     console.log(`Saved public/games/${game.file}`);
   } catch (error) {

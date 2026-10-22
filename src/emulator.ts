@@ -1,4 +1,4 @@
-import { Apple2, CLOCK_HZ, type Roms } from './apple2';
+import { Apple2, CLOCK_HZ, type Model, type Roms } from './apple2';
 import type { Screen } from './render/screen';
 
 /** Longest gap we catch up on, so a backgrounded tab doesn't run a burst of frames. */
@@ -15,8 +15,8 @@ export class Emulator {
   private clockDebt = 0;
   private warping = false;
 
-  constructor(roms: Roms, screen: Screen) {
-    this.apple = new Apple2(roms);
+  constructor(roms: Roms, model: Model, screen: Screen) {
+    this.apple = new Apple2(roms, model);
     this.apple.video.onFrame = (framebuffer) => screen.capture(framebuffer);
   }
 

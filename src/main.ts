@@ -1,21 +1,21 @@
 import { AudioOutput } from './audio/audio-output';
-import { CLOCK_HZ } from './apple2';
+import { CLOCK_HZ, type Model } from './apple2';
 import { FloppyDisk } from './disk/floppy';
 import { STATE_EXTENSION, filesFrom, firstDisk, readMedia, titleFromFileName } from './disk/load';
 import { Emulator } from './emulator';
-import { fetchGame, loadGameManifest, type BundledGame } from './games';
+import { fetchGame, loadGameManifest, runsOn, type BundledGame, type Machine } from './games';
 import { GamepadManager, padName, readGamepad } from './io/gamepad-input';
 import { Joystick } from './io/joystick';
 import { AppleKeyboard, type KeySetName } from './io/keyboard';
 import { SCREEN_ASPECT, Screen } from './render/screen';
-import { SystemRomStore, hasRequiredRoms, machineRoms, modelName, romsCrc, type StoredRom } from './roms/system-roms';
+import { SystemRomStore, hasRequiredRoms, machineRoms, modelName, romsCrc, type StoredRom, type SystemRoms } from './roms/system-roms';
 import { DiskSaves, type DiskSaveRecord, type SaveDiskRecord } from './storage/disk-saves';
 import { SaveStates, decodeSession, encodeSession, type SaveStateRecord, type Session } from './storage/save-states';
 import { memoryStores, openBrowserStores, type KeyValueStore } from './storage/store';
 import { DiskPanel } from './ui/disk-panel';
 import { downloadFile } from './ui/download';
-import { askForRoms } from './ui/rom-setup';
-import { Settings } from './ui/settings';
+import { askForMachine } from './ui/rom-setup';
+import { JsonRecord, Settings } from './ui/settings';
 import { attachToolbar } from './ui/toolbar';
 import type { Monitor } from './video/video';
 
@@ -70,16 +70,21 @@ async function main(): Promise<void> {
         "This browser isn't letting the page store files, so the ROMs will be forgotten when you close it.";
     }
     const romStore = new SystemRomStore(stores.systemRoms as KeyValueStore<StoredRom>);
-    let systemRoms = await romStore.load();
-    if (!hasRequiredRoms(systemRoms)) {
+    const machineRecord = new JsonRecord<{ model: Model }>('appleii-machine');
+    let model: Model = machineRecord.read().model ?? 'iie';
+    let systemRoms: SystemRoms = await romStore.load();
+    if (!hasRequiredRoms(systemRoms, model)) {
       status.textContent = 'Load the ROMs above to switch the Apple on.';
-      systemRoms = (await askForRoms(romSetup, romStore, systemRoms)) ?? systemRoms;
+      const setup = await askForMachine(romSetup, romStore, systemRoms, { model });
+      if (!setup) throw new Error('No ROMs.');
+      ({ model, roms: systemRoms } = setup);
+      machineRecord.write({ model });
     }
-    let roms = machineRoms(systemRoms);
+    let roms = machineRoms(systemRoms, model);
 
     // --- The machine -----------------------------------------------------------------
     const screen = new Screen(canvas);
-    const emulator = new Emulator(roms, screen);
+    const emulator = new Emulator(roms, model, screen);
     const apple = emulator.apple;
     const audio = await AudioOutput.create().catch((error: unknown) => {
       console.warn('Audio is unavailable:', error);
@@ -92,8 +97,11 @@ async function main(): Promise<void> {
     let changingRoms = false;
     const focusScreen = () => canvas.focus();
 
+    /** The machine as the free games know it: the enhanced IIe is told from the original by its ROM. */
+    const machine = (): Machine => (model === 'iie' && apple.enhanced ? 'enhanced-iie' : model);
+
     const updateStatus = () => {
-      const parts = [modelName(roms.main), apple.enhanced ? '65C02' : '6502', '128K'];
+      const parts = [modelName(model, roms.main), apple.enhanced ? '65C02' : '6502', model === 'iie' ? '128K' : '64K'];
       if (apple.mockingboardOn) parts.push('Mockingboard');
       status.textContent = parts.join(' · ');
     };
@@ -103,7 +111,8 @@ async function main(): Promise<void> {
       apple.audio.resync(apple.cycles);
       emulator.resetTiming();
       audio?.flush();
-      if (!apple.disk2.drives[0].disk) diskPanel.showMessage('No disk in drive 1: the Apple waits for one. Insert a disk, or press Ctrl-Reset for BASIC.', true);
+      if (model === 'ii') diskPanel.showMessage('The Apple II starts in its Monitor: type C600G and Return to boot the disk in drive 1.', true);
+      else if (!apple.disk2.drives[0].disk) diskPanel.showMessage('No disk in drive 1: the Apple waits for one. Insert a disk, or press Ctrl-Reset for BASIC.', true);
     };
 
     const ctrlReset = () => {
@@ -157,13 +166,14 @@ async function main(): Promise<void> {
 
     // --- Save states -----------------------------------------------------------------
     const saveStates = new SaveStates(stores.saveStates as KeyValueStore<SaveStateRecord>);
-    const sessionName = () => diskLabels[0] ?? modelName(roms.main);
+    const sessionName = () => diskLabels[0] ?? modelName(model, roms.main);
     const currentSession = async (): Promise<Session> => {
       await persistAll();
       return {
         machine: apple.saveState(),
+        model,
+        modelName: modelName(model, roms.main),
         romsCrc: romsCrc(roms),
-        model: modelName(roms.main),
         mockingboard: apple.mockingboardOn,
         disks: apple.disk2.drives.map((drive, i) => {
           const disk = drive.disk;
@@ -172,10 +182,14 @@ async function main(): Promise<void> {
       };
     };
     const restoreSession = async (session: Session) => {
-      if (session.romsCrc !== romsCrc(roms)) {
-        throw new Error(`That state was saved with other ROMs (${session.model}); load those (System ROMs...) to use it.`);
+      // A state from another model switches to it, if its ROMs are here.
+      const stored = await romStore.load();
+      const sessionRoms = hasRequiredRoms(stored, session.model) ? machineRoms(stored, session.model) : null;
+      if (!sessionRoms || session.romsCrc !== romsCrc(sessionRoms)) {
+        throw new Error(`That state was saved on an ${session.modelName} with other ROMs; load those (Machine setup...) to use it.`);
       }
       await persistAll();
+      if (session.model !== model || sessionRoms.main !== roms.main) switchMachine(session.model, sessionRoms);
       mockingboard.checked = session.mockingboard;
       apple.setMockingboard(session.mockingboard);
       session.disks.forEach((saved, drive) => {
@@ -193,7 +207,25 @@ async function main(): Promise<void> {
     };
 
     // --- Panels ----------------------------------------------------------------------
+    let allGames: BundledGame[] = [];
+    /** The free games this machine can run, as listed in the picker. */
     let bundledGames: BundledGame[] = [];
+    const showGames = () => {
+      bundledGames = allGames.filter((game) => runsOn(game, machine()));
+      const href = (link?: string) => (link?.startsWith('games/') ? `${import.meta.env.BASE_URL}${link}` : link);
+      diskPanel.setGames(bundledGames.map((game) => ({ ...game, licenseHref: href(game.licenseUrl), sourceHref: href(game.sourceUrl) })));
+    };
+
+    /** Becomes another model (or the same one with other ROMs), switched off and on. */
+    const switchMachine = (newModel: Model, newRoms: typeof roms) => {
+      model = newModel;
+      roms = newRoms;
+      machineRecord.write({ model });
+      apple.setRoms(roms, model);
+      capsLock.disabled = model !== 'iie';
+      updateStatus();
+      showGames();
+    };
     /** Puts one disk image in a drive, or loads a save state. */
     const openDisk = async (file: File, drive: number) => {
       const media = await readMedia(file);
@@ -238,6 +270,11 @@ async function main(): Promise<void> {
       onPlayGame: async (file) => {
         await openFiles([file], 0);
         powerCycle();
+        if (model === 'ii') {
+          // The Apple II has no autostart: boot drive 1 from the Monitor, as its owner would.
+          apple.typeKeys('C600G\n');
+          diskPanel.showMessage('');
+        }
       },
       onNewSaveDisk: async (drive) => {
         await persistDisk(drive);
@@ -317,27 +354,24 @@ async function main(): Promise<void> {
     await refreshSaveDisks();
 
     void loadGameManifest(import.meta.env.BASE_URL).then((games) => {
-      bundledGames = games;
-      const href = (link?: string) => (link?.startsWith('games/') ? `${import.meta.env.BASE_URL}${link}` : link);
-      diskPanel.setGames(games.map((game) => ({ ...game, licenseHref: href(game.licenseUrl), sourceHref: href(game.sourceUrl) })));
+      allGames = games;
+      showGames();
     });
 
-    /** Shows the ROM setup over the paused Apple; new ROMs take effect with a restart. */
-    requireElement<HTMLButtonElement>('[data-action="change-roms"]').addEventListener('click', () => {
+    /** Shows Machine setup over the paused Apple; the machine and ROMs chosen take effect with a restart. */
+    requireElement<HTMLButtonElement>('[data-action="machine-setup"]').addEventListener('click', () => {
       if (changingRoms) return;
       changingRoms = true;
       audio?.flush();
       void romStore
         .load()
-        .then((stored) => askForRoms(romSetup, romStore, stored, { whileRunning: true }))
-        .then(async (updated) => {
+        .then((stored) => askForMachine(romSetup, romStore, stored, { model, whileRunning: true }))
+        .then(async (setup) => {
           changingRoms = false;
-          if (updated && hasRequiredRoms(updated)) {
+          if (setup && hasRequiredRoms(setup.roms, setup.model)) {
             await persistAll();
-            roms = machineRoms(updated);
-            apple.setRoms(roms);
+            switchMachine(setup.model, machineRoms(setup.roms, setup.model));
             powerCycle();
-            updateStatus();
           }
           focusScreen();
         });
@@ -385,6 +419,8 @@ async function main(): Promise<void> {
     keyboard.attach(window);
     keyboard.onReset = ctrlReset;
     const capsLock = requireElement<HTMLInputElement>('input[name="caps-lock"]');
+    // The II and II Plus only have capitals.
+    capsLock.disabled = model !== 'iie';
     keyboard.capsLock = capsLock.checked;
     capsLock.addEventListener('change', () => {
       keyboard.capsLock = capsLock.checked;

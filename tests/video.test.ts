@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CYCLES_PER_FRAME, SCREEN_WIDTH, hiresLineOffset, textRowOffset } from '../src/video/video';
-import { testMachine } from './helpers/rom';
+import { Apple2 } from '../src/apple2';
+import { testMachine, testRoms } from './helpers/rom';
 
 /** A canvas pixel (little-endian RGBA) as RGB. */
 const rgb = (pixel: number) => ((pixel & 0xff) << 16) | (pixel & 0xff00) | ((pixel >> 16) & 0xff);
@@ -88,5 +89,20 @@ describe('the video', () => {
       if (apple.read(0xc500) === 0x5a) seen++;
     }
     expect(seen).toBeGreaterThan(50);
+  });
+});
+
+describe("the Apple II and II Plus's video", () => {
+  it('draws their 64 characters mirrored from the 2K ROM, inverse below $40', () => {
+    const roms = testRoms();
+    const chars = new Uint8Array(0x800);
+    chars[0x01 * 8] = 0x40; // "A"'s top row: just its leftmost dot (bit 6)
+    const apple = new Apple2({ ...roms, main: roms.main.slice(0x1000), video: chars }, 'iiplus');
+    apple.main[0x400] = 0xc1; // normal A
+    apple.main[0x401] = 0x01; // inverse A
+    apple.runCycles(CYCLES_PER_FRAME * 2);
+    const pixel = (x: number) => rgb(apple.video.framebuffer[x]);
+    expect([pixel(0), pixel(1), pixel(2)]).toEqual([0xffffff, 0xffffff, 0]);
+    expect([pixel(14), pixel(16)]).toEqual([0, 0xffffff]);
   });
 });

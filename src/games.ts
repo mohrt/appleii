@@ -4,12 +4,19 @@
  *   { "games": [{ "title": "Some Game", "file": "some-game.dsk" }] }
  *
  * `file` is relative to `games/`. Entries may also give a `credit`, a `license`
- * with a `licenseUrl`, a `sourceUrl` and a short `hint` about the game.
+ * with a `licenseUrl`, a `sourceUrl`, a short `hint` about the game, and the
+ * oldest machine it `requires` (one of MACHINES; without it, any Apple II).
  * Without the manifest no games are offered.
  */
+
+/** The machines from oldest to newest: each runs what the ones before it do. */
+export const MACHINES = ['ii', 'iiplus', 'iie', 'enhanced-iie'] as const;
+export type Machine = (typeof MACHINES)[number];
+
 export interface BundledGame {
   title: string;
   file: string;
+  requires?: Machine;
   credit?: string;
   license?: string;
   /** An https:// address, or a file in `games/` (given as `games/...`). */
@@ -51,10 +58,16 @@ export function parseGameManifest(json: unknown): BundledGame[] {
       licenseUrl: optionalLink(fields.licenseUrl),
       sourceUrl: optionalLink(fields.sourceUrl),
       hint: optionalText(fields.hint),
+      requires: MACHINES.find((machine) => machine === fields.requires),
     };
     for (const [key, value] of Object.entries(extras)) if (value) Object.assign(game, { [key]: value });
     return [game];
   });
+}
+
+/** Whether a game runs on a machine. */
+export function runsOn(game: BundledGame, machine: Machine): boolean {
+  return MACHINES.indexOf(game.requires ?? 'ii') <= MACHINES.indexOf(machine);
 }
 
 /** The site's game list, or none if it has no (valid) manifest. */

@@ -43,3 +43,41 @@ describe.skipIf(!hasRoms)('booting with your ROMs', () => {
     expect(screenText(apple).join('\n')).toContain('Apple ][');
   });
 });
+
+describe.skipIf(!hasRoms)('the Apple II Plus and Apple II', () => {
+  it('starts the II Plus in Applesoft when Ctrl-Reset stops the disk boot, typing in capitals', () => {
+    const apple = machine('plus');
+    runSeconds(apple, 0.5);
+    expect(screenText(apple)[0]).toContain('APPLE ][');
+    apple.reset();
+    runSeconds(apple, 0.5);
+    typeText(apple, 'print 6*7\n');
+    runSeconds(apple, 0.3);
+    const text = screenText(apple);
+    expect(text).toContain(']PRINT 6*7');
+    expect(text).toContain('42');
+  });
+
+  it('has no IIe soft switches, 80 columns or auxiliary memory on the II Plus', () => {
+    const apple = machine('plus');
+    apple.write(0xc005, 0); // RAMWRT on a IIe
+    apple.write(0x2000, 0x55);
+    expect(apple.main[0x2000]).toBe(0x55);
+    expect(apple.aux[0x2000]).toBe(0);
+    apple.write(0xc00d, 0); // 80COL on a IIe
+    expect(apple.videoSwitches.col80).toBe(false);
+  });
+
+  it('starts the original Apple II in the Monitor, with Integer BASIC a Ctrl-B away', () => {
+    const apple = machine('ii');
+    runSeconds(apple, 0.5);
+    expect(screenText(apple).some((line) => line.startsWith('*'))).toBe(true);
+    typeText(apple, '\x02\n');
+    runSeconds(apple, 0.3);
+    typeText(apple, 'PRINT 6*7\n');
+    runSeconds(apple, 0.3);
+    const text = screenText(apple);
+    expect(text).toContain('>PRINT 6*7');
+    expect(text).toContain('42');
+  });
+});

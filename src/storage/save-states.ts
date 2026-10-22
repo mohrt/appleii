@@ -1,5 +1,6 @@
 import type { StateNode } from '../state/snapshot';
 import { decodeState, encodeState } from '../state/snapshot';
+import type { Model } from '../apple2';
 import type { DiskFormat } from '../disk/floppy';
 import type { DiskOrigin } from './disk-saves';
 import type { KeyValueStore } from './store';
@@ -15,9 +16,10 @@ export interface SessionDisk {
 /** Everything needed to resume: the machine, its setup and the disks in its drives. */
 export interface Session {
   machine: StateNode;
-  /** CRC-32 of the ROMs it ran (a state only makes sense with the same ones). */
+  /** The machine it was, and the CRC-32 of the ROMs it ran (a state only makes sense with the same ones). */
+  model: Model;
+  modelName: string;
   romsCrc: number;
-  model: string;
   mockingboard: boolean;
   disks: (SessionDisk | null)[];
 }
@@ -65,6 +67,7 @@ export class SaveStates {
 }
 
 const MAGIC = 'appleii-session';
+const MODELS: readonly Model[] = ['ii', 'iiplus', 'iie'];
 
 export async function encodeSession(session: Session): Promise<Uint8Array> {
   return encodeState({ magic: MAGIC, ...session });
@@ -73,5 +76,7 @@ export async function encodeSession(session: Session): Promise<Uint8Array> {
 export async function decodeSession(bytes: Uint8Array): Promise<Session> {
   const decoded = await decodeState<Session & { magic?: string }>(bytes).catch(() => null);
   if (decoded?.magic !== MAGIC) throw new Error('That file is not an Apple II save state.');
+  // States from before the II and II Plus were added are all from a IIe, and kept its name in `model`.
+  if (!MODELS.includes(decoded.model)) return { ...decoded, model: 'iie', modelName: String(decoded.model) };
   return decoded;
 }

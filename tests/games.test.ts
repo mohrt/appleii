@@ -3,8 +3,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CLOCK_HZ, type Apple2 } from '../src/apple2';
 import { FloppyDisk } from '../src/disk/floppy';
-import { parseGameManifest } from '../src/games';
-import { hasRoms, machine, runSeconds } from './helpers/machine';
+import { parseGameManifest, runsOn, type Machine } from '../src/games';
+import { hasRoms, machine, runSeconds, type TestModel } from './helpers/machine';
 import { framePng } from './helpers/png';
 
 // Disk images are never committed. These boot the free games (`npm run fetch:games` puts
@@ -13,7 +13,15 @@ const root = join(import.meta.dirname, '..');
 const EXTENSION = /\.(dsk|do|po|nib|woz)$/i;
 const diskFiles = (dir: string) =>
   existsSync(dir) ? readdirSync(dir).filter((name) => EXTENSION.test(name)).map((name) => join(dir, name)) : [];
-const disks = [...diskFiles(join(root, 'public', 'games')), ...diskFiles(join(root, 'disks'))];
+const MODELS: Record<Machine, TestModel> = { ii: 'ii', iiplus: 'plus', iie: 'original', 'enhanced-iie': 'enhanced' };
+const manifestPath = join(root, 'public', 'games', 'index.json');
+const freeGames = existsSync(manifestPath) ? parseGameManifest(JSON.parse(readFileSync(manifestPath, 'utf8'))) : [];
+/** Each disk with the machines to boot it on: the free games on the oldest one they say they run on too. */
+const runs: { path: string; model: TestModel }[] = [...diskFiles(join(root, 'public', 'games')), ...diskFiles(join(root, 'disks'))].flatMap((path) => {
+  const game = freeGames.find((entry) => join(root, 'public', 'games', entry.file) === path);
+  const oldest = game?.requires ? MODELS[game.requires] : 'enhanced';
+  return [...new Set<TestModel>(['enhanced', oldest])].map((model) => ({ path, model }));
+});
 const BOOT_SECONDS = Number(process.env.BOOT_SECONDS ?? 60);
 const PLAY_SECONDS = Number(process.env.PLAY_SECONDS ?? 10);
 /** Set SHOTS=<dir> to save screenshots of the title screen and after pressing keys. */
@@ -28,20 +36,36 @@ function screenshot(apple: Apple2, name: string): void {
 const litPixels = (apple: Apple2) => apple.video.framebuffer.reduce((count, pixel) => count + ((pixel & 0xffffff) !== 0 ? 1 : 0), 0);
 
 describe('the free games manifest', () => {
-  const manifest = join(root, 'public', 'games', 'index.json');
-  it.skipIf(!existsSync(manifest))('lists games whose files are there', () => {
-    const games = parseGameManifest(JSON.parse(readFileSync(manifest, 'utf8')));
-    expect(games.length).toBeGreaterThan(0);
-    for (const game of games) expect(existsSync(join(root, 'public', 'games', game.file)), game.file).toBe(true);
+  it.skipIf(!existsSync(manifestPath))('lists games whose files are there', () => {
+    expect(freeGames.length).toBeGreaterThan(0);
+    for (const game of freeGames) expect(existsSync(join(root, 'public', 'games', game.file)), game.file).toBe(true);
+  });
+
+  it('offers each machine the games it can run: those for older machines too', () => {
+    const games = parseGameManifest({
+      games: [
+        { title: 'Anywhere', file: 'a.dsk' },
+        { title: 'Plus', file: 'b.dsk', requires: 'iiplus' },
+        { title: 'Enhanced', file: 'c.dsk', requires: 'enhanced-iie' },
+        { title: 'Unknown', file: 'd.dsk', requires: 'iigs' },
+      ],
+    });
+    const titles = (machine: Machine) => games.filter((game) => runsOn(game, machine)).map((game) => game.title);
+    expect(titles('ii')).toEqual(['Anywhere', 'Unknown']);
+    expect(titles('iiplus')).toEqual(['Anywhere', 'Plus', 'Unknown']);
+    expect(titles('iie')).toEqual(['Anywhere', 'Plus', 'Unknown']);
+    expect(titles('enhanced-iie')).toEqual(['Anywhere', 'Plus', 'Enhanced', 'Unknown']);
   });
 });
 
-describe.skipIf(disks.length === 0 || !hasRoms)('games', () => {
-  for (const path of disks) {
-    const name = path.slice(path.lastIndexOf('/') + 1).replace(EXTENSION, '');
+describe.skipIf(runs.length === 0 || !hasRoms)('games', () => {
+  for (const { path, model } of runs) {
+    const name = `${path.slice(path.lastIndexOf('/') + 1).replace(EXTENSION, '')} on ${model}`;
     it(`${name} boots, draws a picture and keeps running`, () => {
-      const apple = machine('enhanced');
+      const apple = machine(model);
       apple.insertDisk(0, FloppyDisk.fromImage(path, new Uint8Array(readFileSync(path))));
+      // The Apple II starts in its Monitor, where C600G boots the disk.
+      if (model === 'ii') apple.typeKeys('C600G\n');
       runSeconds(apple, BOOT_SECONDS);
       screenshot(apple, `${name} - title`);
       expect(apple.cpu.jammedAt, 'the CPU is running').toBe(-1);

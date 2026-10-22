@@ -14,21 +14,37 @@ export const MOCKINGBOARD_SLOT = 4;
 const PADDLE_CYCLES_PER_UNIT = 11;
 export const PADDLE_CENTRE = 127;
 
+/** The Apple II (with Integer BASIC), the Apple II Plus (with Applesoft) or the Apple IIe. */
+export type Model = 'ii' | 'iiplus' | 'iie';
+
 export interface Roms {
-  /** $C000-$FFFF: the internal firmware at $C100-$CFFF, then Applesoft and the Monitor. */
+  /**
+   * The IIe's 16K for $C000-$FFFF (its internal firmware at $C100-$CFFF, then
+   * Applesoft and the Monitor), or the II and II Plus's 12K for $D000-$FFFF.
+   */
   main: Uint8Array;
-  /** The video ROM's character shapes. */
+  /** The video ROM's character shapes: the IIe's 4K, or the II and II Plus's 2K. */
   video: Uint8Array;
   /** The Disk II controller's 256-byte boot ROM. */
   disk: Uint8Array;
 }
 
+const IIE_ROM_SIZE = 0x4000;
+
 /** The enhanced IIe's Monitor has $E0 at $FBC0 (the original has $EA); it runs on a 65C02. */
 export function isEnhancedRom(main: Uint8Array): boolean {
-  return main[0xfbc0 - 0xc000] === 0xe0;
+  return main.length === IIE_ROM_SIZE && main[0xfbc0 - 0xc000] === 0xe0;
 }
 
-/** The IIe's memory soft switches (the MMU) and the language card. */
+/** A main ROM placed in the $C000-$FFFF image the memory map reads (the II's and II Plus's start at $D000). */
+function romImage(main: Uint8Array): Uint8Array {
+  if (main.length === IIE_ROM_SIZE) return main;
+  const image = new Uint8Array(IIE_ROM_SIZE);
+  image.set(main, IIE_ROM_SIZE - main.length);
+  return image;
+}
+
+/** The IIe's memory soft switches (the MMU) and the language card (the II and II Plus's, in slot 0). */
 class MemorySwitches {
   ramRd = false;
   ramWrt = false;
@@ -47,7 +63,9 @@ class MemorySwitches {
  * An Apple IIe: 6502 (or 65C02 for the enhanced IIe), 64K of main RAM and
  * the extended 80-column card's 64K of auxiliary RAM, the MMU and IOU soft
  * switches, the keyboard, the game port, the speaker, a Disk II controller in
- * slot 6 and optionally a Mockingboard in slot 4.
+ * slot 6 and optionally a Mockingboard in slot 4. As an Apple II or II Plus
+ * it has 48K and a 16K language card instead, and none of the IIe's
+ * additions: no auxiliary memory, 80 columns, double graphics or lowercase.
  */
 export class Apple2 implements CpuBus {
   readonly main = new Uint8Array(0x10000);
@@ -73,6 +91,8 @@ export class Apple2 implements CpuBus {
   /** The paddles (a joystick is paddles 0 and 1), 0-255. */
   readonly paddles = [PADDLE_CENTRE, PADDLE_CENTRE, PADDLE_CENTRE, PADDLE_CENTRE];
   paddleTriggered = -1_000_000;
+  /** Keys waiting to be typed. */
+  private keyQueue: number[] = [];
 
   /** For each 256-byte page, the memory it reads from (null for I/O and slot space) and where in it. */
   private readonly readPages: (Uint8Array | null)[] = new Array(256).fill(null);
@@ -82,17 +102,24 @@ export class Apple2 implements CpuBus {
   /** Where writes to ROM go. */
   private readonly sink = new Uint8Array(0x100);
 
-  constructor(roms: Roms) {
-    this.rom = roms.main;
+  constructor(
+    roms: Roms,
+    public model: Model = 'iie',
+  ) {
+    this.rom = romImage(roms.main);
     this.cpu = new Cpu6502(this, isEnhancedRom(roms.main) ? 'cmos' : 'nmos');
     this.disk2 = new Disk2(roms.disk);
-    this.video = new Video(this.videoSwitches, this.main, this.aux, roms.video);
+    this.video = new Video(this.videoSwitches, this.main, this.aux, roms.video, model === 'iie' ? 'iie' : 'ii');
     this.audio.mockingboard = this.mockingboard;
     this.powerOn();
   }
 
   get enhanced(): boolean {
     return this.cpu.variant === 'cmos';
+  }
+
+  get isIIe(): boolean {
+    return this.model === 'iie';
   }
 
   // --- Power and reset ------------------------------------------------------------
@@ -104,6 +131,7 @@ export class Apple2 implements CpuBus {
     Object.assign(this.videoSwitches, new VideoSwitches());
     this.keyLatch = 0;
     this.keyStrobe = false;
+    this.keyQueue = [];
     this.disk2.reset();
     this.disk2.drives.forEach((drive) => (drive.quarterTrack = 0));
     this.reset();
@@ -129,6 +157,7 @@ export class Apple2 implements CpuBus {
     const cpu = this.cpu;
     const board = this.mockingboardOn ? this.mockingboard : null;
     while (this.cycles < end) {
+      if (this.keyQueue.length !== 0 && !this.keyStrobe) this.pressKey(this.keyQueue.shift()!);
       if (board) {
         board.catchUp(this.cycles);
         cpu.irqLine = board.irq;
@@ -211,6 +240,12 @@ export class Apple2 implements CpuBus {
     const m = this.memory;
     const offset = addr - 0xc000;
     let result: number;
+    if (!this.isIIe) {
+      const slot = (addr >> 8) & 7;
+      if (addr < 0xc800 && slot === DISK_SLOT) return this.disk2.rom[addr & 0xff];
+      if (addr < 0xc800 && slot === MOCKINGBOARD_SLOT && this.mockingboardOn) return this.mockingboard.access(addr & 0xff, value, this.now);
+      return this.video.floatingBus(this.now);
+    }
     if (addr >= 0xc800) {
       result = m.intCxRom || m.intC8Rom ? this.rom[offset] : this.video.floatingBus(this.now);
       if (addr === 0xcfff) m.intC8Rom = false;
@@ -238,10 +273,15 @@ export class Apple2 implements CpuBus {
     const v = this.videoSwitches;
     if (reg < 0x10) {
       if (value === null) return this.keyLatch | (this.keyStrobe ? 0x80 : 0);
-      this.memorySwitch(reg);
+      if (this.isIIe) this.memorySwitch(reg);
       return 0;
     }
     if (reg < 0x20) {
+      // Before the IIe, any of $C010-$C01F just cleared the keyboard strobe.
+      if (!this.isIIe) {
+        this.keyStrobe = false;
+        return this.video.floatingBus(this.now);
+      }
       if (reg === 0x10 || value !== null) {
         this.keyStrobe = false;
         return this.bit(this.anyKeyDown);
@@ -349,9 +389,20 @@ export class Apple2 implements CpuBus {
 
   // --- Inputs and media ------------------------------------------------------------
 
+  /** Types text, each key as soon as the program has taken the last one. */
+  typeKeys(text: string): void {
+    this.keyQueue.push(...[...text].map((char) => (char === '\n' ? 0x0d : char.charCodeAt(0))));
+  }
+
   /** A key typed: its ASCII code goes in the keyboard latch with the strobe set. */
   pressKey(code: number): void {
-    this.keyLatch = code & 0x7f;
+    let key = code & 0x7f;
+    if (!this.isIIe) {
+      // The II and II Plus keyboards have only capitals, and nothing above them in ASCII.
+      if (key >= 0x61 && key <= 0x7a) key -= 0x20;
+      if (key >= 0x60) return;
+    }
+    this.keyLatch = key;
     this.keyStrobe = true;
   }
 
@@ -359,10 +410,12 @@ export class Apple2 implements CpuBus {
     this.disk2.drives[drive].disk = disk;
   }
 
-  setRoms(roms: Roms): void {
-    this.rom = roms.main;
+  /** Becomes another model with its ROMs (followed by a power cycle). */
+  setRoms(roms: Roms, model: Model = this.model): void {
+    this.model = model;
+    this.rom = romImage(roms.main);
     (this.disk2 as { rom: Uint8Array }).rom = roms.disk;
-    this.video.setCharRom(roms.video);
+    this.video.setCharRom(roms.video, model === 'iie' ? 'iie' : 'ii');
     this.cpu.setVariant(isEnhancedRom(roms.main) ? 'cmos' : 'nmos');
     this.updatePages();
   }

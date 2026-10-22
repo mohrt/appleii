@@ -267,6 +267,10 @@ body.needs-roms .controls {
   margin-top: 0.4rem !important;
 }
 
+.machine-choice select {
+  max-width: none;
+}
+
 .setup-row label {
   display: inline-flex;
   align-items: center;

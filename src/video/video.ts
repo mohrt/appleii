@@ -12,6 +12,15 @@ const MIXED_TEXT_LINE = 160;
 const FLASH_FRAMES = 16;
 
 export type Monitor = 'color' | 'green' | 'amber' | 'white';
+/** The IIe's 4K video ROM, or the II and II Plus's 2K one (64 capitals, inverse and flashing made by the hardware). */
+export type CharacterSet = 'iie' | 'ii';
+
+/** The II's character ROM has a glyph's leftmost dot in bit 6; this turns its rows round to bit 0. */
+const MIRRORED = Uint8Array.from({ length: 128 }, (_, bits) => {
+  let out = 0;
+  for (let dot = 0; dot < 7; dot++) if (bits & (0x40 >> dot)) out |= 1 << dot;
+  return out;
+});
 
 /** The soft switches that choose what the screen shows. */
 export class VideoSwitches {
@@ -74,10 +83,12 @@ export class Video {
     private readonly main: Uint8Array,
     private readonly aux: Uint8Array,
     private charRom: Uint8Array,
+    private characterSet: CharacterSet = 'iie',
   ) {}
 
-  setCharRom(rom: Uint8Array): void {
+  setCharRom(rom: Uint8Array, characterSet: CharacterSet): void {
     this.charRom = rom;
+    this.characterSet = characterSet;
   }
 
   /** Where the beam is: line 0-261 and cycle 0-64 within it. */
@@ -146,6 +157,11 @@ export class Video {
 
   /** The 7 dots of a character's row (bit 0 is the leftmost), lit where the ROM has a 0. */
   private glyphRow(code: number, row: number): number {
+    if (this.characterSet === 'ii') {
+      const dots = MIRRORED[this.charRom[(code & 0x3f) * 8 + row] & 0x7f];
+      const inverse = code < 0x40 || (code < 0x80 && this.flashOn);
+      return inverse ? ~dots & 0x7f : dots;
+    }
     let index = code;
     if (!this.switches.altChar && code >= 0x40 && code < 0x80) {
       // Flashing characters alternate between inverse and normal.

@@ -1,18 +1,31 @@
-import { isEnhancedRom, type Roms } from '../apple2';
+import { isEnhancedRom, type Model, type Roms } from '../apple2';
 import type { KeyValueStore } from '../storage/store';
 import { crc32 } from '../util/crc32';
 
-/** The ROMs kept: the IIe's main ROM (or one of its two chips until both are given), the video ROM and the Disk II ROM. */
-export type RomKind = 'main' | 'mainCD' | 'mainEF' | 'video' | 'disk';
-export const ROM_KINDS: readonly RomKind[] = ['main', 'mainCD', 'mainEF', 'video', 'disk'];
+/**
+ * The ROMs kept: the IIe's main ROM (or one of its two chips until both are
+ * given) and video ROM, the II Plus's and the II's 12K ROMs and their 2K
+ * character ROM, and the Disk II ROM all of them use.
+ */
+export type RomKind = 'main' | 'mainCD' | 'mainEF' | 'video' | 'plus' | 'ii' | 'video2' | 'disk';
+export const ROM_KINDS: readonly RomKind[] = ['main', 'mainCD', 'mainEF', 'video', 'plus', 'ii', 'video2', 'disk'];
 /** The rows of the setup panel. */
-export type RomSlot = 'main' | 'video' | 'disk';
+export type RomSlot = 'main' | 'video' | 'plus' | 'ii' | 'video2' | 'disk';
+/** The ROMs each model needs. */
+export const MODEL_ROMS: Record<Model, readonly RomSlot[]> = {
+  iie: ['main', 'video', 'disk'],
+  iiplus: ['plus', 'video2', 'disk'],
+  ii: ['ii', 'video2', 'disk'],
+};
+export const MODEL_NAMES: Record<Model, string> = { ii: 'Apple II', iiplus: 'Apple II Plus', iie: 'Apple IIe' };
 
 const MAIN_SIZE = 0x4000;
 const CHIP_SIZE = 0x2000;
+const II_SIZE = 0x3000;
 const VIDEO_SIZE = 0x1000;
+const VIDEO2_SIZE = 0x800;
 const DISK_SIZE = 0x100;
-export const ROM_FILE_SIZES = new Set([MAIN_SIZE, CHIP_SIZE, VIDEO_SIZE, DISK_SIZE]);
+export const ROM_FILE_SIZES = new Set([MAIN_SIZE, CHIP_SIZE, II_SIZE, VIDEO_SIZE, VIDEO2_SIZE, DISK_SIZE]);
 
 /** CRC-32s of Apple's chips. */
 const KNOWN: Record<number, { kind: RomKind; title: string }> = {
@@ -22,8 +35,21 @@ const KNOWN: Record<number, { kind: RomKind; title: string }> = {
   0xfc3d59d8: { kind: 'mainEF', title: 'original IIe, 342-0134' },
   0x2651014d: { kind: 'video', title: 'enhanced IIe video, 342-0265' },
   0xb081df66: { kind: 'video', title: 'original IIe video, 342-0133' },
+  0x1d05c1b1: { kind: 'plus', title: 'Apple II Plus, Applesoft and the Autostart Monitor' },
+  0x2af3a6c1: { kind: 'ii', title: 'Apple II, Integer BASIC and the Monitor' },
+  0x64f415c6: { kind: 'video2', title: 'Apple II character ROM, 341-0036' },
   0xce7144f6: { kind: 'disk', title: 'Disk II, 341-0027' },
 };
+
+/** Applesoft's HGR2 token (the last letter has its top bit set); Integer BASIC has no HGR. */
+const APPLESOFT_TOKEN = [0x48, 0x47, 0x52, 0xb2];
+
+function hasApplesoft(data: Uint8Array): boolean {
+  for (let i = 0; i + APPLESOFT_TOKEN.length <= data.length; i++) {
+    if (APPLESOFT_TOKEN.every((byte, j) => data[i + j] === byte)) return true;
+  }
+  return false;
+}
 
 export interface StoredRom {
   /** The file it came from, shown to the user. */
@@ -78,17 +104,20 @@ export function identifyRom(name: string, data: Uint8Array): IdentifiedRom {
       return { kind: looksLikeEfChip(data) ? 'mainEF' : 'mainCD', name, data, warning: unknown };
     case VIDEO_SIZE:
       return { kind: 'video', name, data, warning: unknown };
+    case II_SIZE:
+      return { kind: hasApplesoft(data) ? 'plus' : 'ii', name, data, warning: unknown };
+    case VIDEO2_SIZE:
+      return { kind: 'video2', name, data, warning: unknown };
     case DISK_SIZE:
       if (!isDiskRom(data)) {
         throw new NotARom(`${baseName(name)} is 256 bytes but not the Disk II's 16-sector boot ROM (341-0027).`);
       }
       return { kind: 'disk', name, data, warning: unknown };
-    case 0x3000:
-      throw new Error(`${baseName(name)} looks like an Apple II Plus ROM. This emulator is an Apple IIe: use the IIe's 16K ROM.`);
     default:
       throw new NotARom(
-        `${baseName(name)} is ${data.length.toLocaleString('en')} bytes, which isn't an Apple IIe ROM. ` +
-          'The IIe ROM is 16,384 bytes (or two chips of 8,192), the video ROM 4,096 and the Disk II ROM 256.',
+        `${baseName(name)} is ${data.length.toLocaleString('en')} bytes, which isn't an Apple II ROM. ` +
+          "The IIe's ROM is 16,384 bytes (or two chips of 8,192) and its video ROM 4,096; the II's and II Plus's ROM " +
+          'is 12,288 bytes and their character ROM 2,048; the Disk II ROM is 256.',
       );
   }
 }
@@ -107,20 +136,21 @@ export function hasRom(roms: SystemRoms, slot: RomSlot): boolean {
   return slot === 'main' ? mainRom(roms) !== null : roms[slot] !== undefined;
 }
 
-export function hasRequiredRoms(roms: SystemRoms): boolean {
-  return hasRom(roms, 'main') && hasRom(roms, 'video') && hasRom(roms, 'disk');
+export function hasRequiredRoms(roms: SystemRoms, model: Model): boolean {
+  return MODEL_ROMS[model].every((slot) => hasRom(roms, slot));
 }
 
-/** The ROMs the Apple maps in; throws if any is missing. */
-export function machineRoms(roms: SystemRoms): Roms {
-  const main = mainRom(roms);
-  if (!main || !roms.video || !roms.disk) throw new Error('The IIe ROM, the video ROM and the Disk II ROM are all needed.');
-  return { main, video: roms.video.data, disk: roms.disk.data };
+/** The ROMs a model maps in; throws if any is missing. */
+export function machineRoms(roms: SystemRoms, model: Model): Roms {
+  if (!hasRequiredRoms(roms, model)) throw new Error(`The ${MODEL_NAMES[model]} needs its ROMs: load them in Machine setup.`);
+  const main = model === 'iie' ? mainRom(roms)! : roms[model === 'iiplus' ? 'plus' : 'ii']!.data;
+  const video = roms[model === 'iie' ? 'video' : 'video2']!.data;
+  return { main, video, disk: roms.disk!.data };
 }
 
-/** "Enhanced Apple IIe" or "Apple IIe", from the main ROM. */
-export function modelName(main: Uint8Array): string {
-  return isEnhancedRom(main) ? 'Enhanced Apple IIe' : 'Apple IIe';
+/** The model's name, telling the enhanced IIe from the original by its ROM. */
+export function modelName(model: Model, main: Uint8Array): string {
+  return model === 'iie' && isEnhancedRom(main) ? 'Enhanced Apple IIe' : MODEL_NAMES[model];
 }
 
 /** The CRC-32 of the ROMs a state was saved with: states only make sense with the same ones. */

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Apple2, CLOCK_HZ, type Roms } from '../../src/apple2';
+import { Apple2, CLOCK_HZ, type Model, type Roms } from '../../src/apple2';
 import { textRowOffset } from '../../src/video/video';
 
 /** Your own ROMs, in roms/ (never committed), as AppleWin names them. */
@@ -8,19 +8,27 @@ const romDir = join(import.meta.dirname, '..', '..', 'roms');
 const ROM_FILES = {
   enhanced: 'Apple2e_Enhanced.rom',
   original: 'Apple2e.rom',
+  plus: 'Apple2_Plus.rom',
+  ii: 'Apple2.rom',
   video: 'Apple2e_Enhanced_Video.rom',
+  video2: 'Apple2_Video.rom',
   disk: 'DISK2.rom',
 };
 
+/** The machines the tests run: both IIe ROMs, the II Plus and the II. */
+export type TestModel = 'enhanced' | 'original' | 'plus' | 'ii';
+const MODELS: Record<TestModel, Model> = { enhanced: 'iie', original: 'iie', plus: 'iiplus', ii: 'ii' };
+
 export const hasRoms = Object.values(ROM_FILES).every((file) => existsSync(join(romDir, file)));
 
-export function loadRoms(model: 'enhanced' | 'original' = 'enhanced'): Roms {
+export function loadRoms(model: TestModel = 'enhanced'): Roms {
   const read = (file: string) => new Uint8Array(readFileSync(join(romDir, file)));
-  return { main: read(ROM_FILES[model]), video: read(ROM_FILES.video), disk: read(ROM_FILES.disk) };
+  const video = MODELS[model] === 'iie' ? ROM_FILES.video : ROM_FILES.video2;
+  return { main: read(ROM_FILES[model]), video: read(video), disk: read(ROM_FILES.disk) };
 }
 
-export function machine(model: 'enhanced' | 'original' = 'enhanced'): Apple2 {
-  return new Apple2(loadRoms(model));
+export function machine(model: TestModel = 'enhanced'): Apple2 {
+  return new Apple2(loadRoms(model), MODELS[model]);
 }
 
 export function runSeconds(apple: Apple2, seconds: number): void {

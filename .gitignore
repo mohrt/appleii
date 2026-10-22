@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.DS_Store
+
+# Apple's ROMs are never committed: your own go in roms/ (for the tests only).
+/roms/
+
+# Disk images supplied locally; free games and test files are downloaded by scripts.
+/disks/
+public/games/
+tests/fixtures/dormann/
+tests/fixtures/65x02/

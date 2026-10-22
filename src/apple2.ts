@@ -4,7 +4,7 @@ import type { FloppyDisk } from './disk/floppy';
 import { AudioMixer } from './sound/audio-mixer';
 import { Mockingboard } from './sound/mockingboard';
 import { captureState, restoreState, type StateNode } from './state/snapshot';
-import { Video, VideoSwitches } from './video/video';
+import { CYCLES_PER_FRAME, CYCLES_PER_LINE, SCREEN_LINES, Video, VideoSwitches } from './video/video';
 
 /** 14.31818 MHz / 14, with every 65th cycle stretched by two 14M ticks. */
 export const CLOCK_HZ = 1_020_484;
@@ -14,13 +14,14 @@ export const MOCKINGBOARD_SLOT = 4;
 const PADDLE_CYCLES_PER_UNIT = 11;
 export const PADDLE_CENTRE = 127;
 
-/** The Apple II (with Integer BASIC), the Apple II Plus (with Applesoft) or the Apple IIe. */
-export type Model = 'ii' | 'iiplus' | 'iie';
+/** The Apple II (with Integer BASIC), the Apple II Plus (with Applesoft), the Apple IIe or the Apple IIc. */
+export type Model = 'ii' | 'iiplus' | 'iie' | 'iic';
 
 export interface Roms {
   /**
    * The IIe's 16K for $C000-$FFFF (its internal firmware at $C100-$CFFF, then
-   * Applesoft and the Monitor), or the II and II Plus's 12K for $D000-$FFFF.
+   * Applesoft and the Monitor), the IIc's 16K or two 16K banks of that, or the
+   * II and II Plus's 12K for $D000-$FFFF.
    */
   main: Uint8Array;
   /** The video ROM's character shapes: the IIe's 4K, or the II and II Plus's 2K. */
@@ -30,19 +31,27 @@ export interface Roms {
 }
 
 const IIE_ROM_SIZE = 0x4000;
+const VBL_START_CYCLE = SCREEN_LINES * CYCLES_PER_LINE;
 
 /** The enhanced IIe's Monitor has $E0 at $FBC0 (the original has $EA); it runs on a 65C02. */
 export function isEnhancedRom(main: Uint8Array): boolean {
   return main.length === IIE_ROM_SIZE && main[0xfbc0 - 0xc000] === 0xe0;
 }
 
-/** A main ROM placed in the $C000-$FFFF image the memory map reads (the II's and II Plus's start at $D000). */
-function romImage(main: Uint8Array): Uint8Array {
-  if (main.length === IIE_ROM_SIZE) return main;
+/**
+ * A main ROM as the $C000-$FFFF images the memory map reads: the II's and II
+ * Plus's start at $D000, and the later IIc's 32K is two banks.
+ */
+function romBanks(main: Uint8Array): Uint8Array[] {
+  if (main.length === IIE_ROM_SIZE) return [main];
+  if (main.length === IIE_ROM_SIZE * 2) return [main.subarray(0, IIE_ROM_SIZE), main.subarray(IIE_ROM_SIZE)];
   const image = new Uint8Array(IIE_ROM_SIZE);
   image.set(main, IIE_ROM_SIZE - main.length);
-  return image;
+  return [image];
 }
+
+/** Every IIc has a 65C02; so has the enhanced IIe. */
+const cpuFor = (main: Uint8Array, model: Model) => (model === 'iic' || isEnhancedRom(main) ? 'cmos' : 'nmos');
 
 /** The IIe's memory soft switches (the MMU) and the language card (the II and II Plus's, in slot 0). */
 class MemorySwitches {
@@ -71,6 +80,13 @@ export class Apple2 implements CpuBus {
   readonly main = new Uint8Array(0x10000);
   readonly aux = new Uint8Array(0x10000);
   rom: Uint8Array;
+  private romBanks: Uint8Array[];
+  /** Which of the 32K IIc ROM's banks is in ($C028 switches). */
+  romBank = 0;
+  /** The IIc's IOUDIS switch ($C07E on, $C07F off). */
+  iouDisabled = false;
+  /** When $C070 last cleared the IIc's vertical blank flag. */
+  vblClearedAt = 0;
   readonly video: Video;
   readonly videoSwitches = new VideoSwitches();
   readonly memory = new MemorySwitches();
@@ -106,10 +122,12 @@ export class Apple2 implements CpuBus {
     roms: Roms,
     public model: Model = 'iie',
   ) {
-    this.rom = romImage(roms.main);
-    this.cpu = new Cpu6502(this, isEnhancedRom(roms.main) ? 'cmos' : 'nmos');
+    this.romBanks = romBanks(roms.main);
+    this.rom = this.romBanks[0];
+    this.cpu = new Cpu6502(this, cpuFor(roms.main, model));
     this.disk2 = new Disk2(roms.disk);
-    this.video = new Video(this.videoSwitches, this.main, this.aux, roms.video, model === 'iie' ? 'iie' : 'ii');
+    this.disk2.iwm = model === 'iic';
+    this.video = new Video(this.videoSwitches, this.main, this.aux, roms.video, this.hasMmu ? 'iie' : 'ii');
     this.audio.mockingboard = this.mockingboard;
     this.powerOn();
   }
@@ -118,8 +136,9 @@ export class Apple2 implements CpuBus {
     return this.cpu.variant === 'cmos';
   }
 
-  get isIIe(): boolean {
-    return this.model === 'iie';
+  /** The IIe and IIc: auxiliary memory, 80 columns, double graphics and the MMU and IOU soft switches. */
+  get hasMmu(): boolean {
+    return this.model === 'iie' || this.model === 'iic';
   }
 
   // --- Power and reset ------------------------------------------------------------
@@ -129,6 +148,8 @@ export class Apple2 implements CpuBus {
     this.main.fill(0);
     this.aux.fill(0);
     Object.assign(this.videoSwitches, new VideoSwitches());
+    this.selectRomBank(0);
+    this.iouDisabled = false;
     this.keyLatch = 0;
     this.keyStrobe = false;
     this.keyQueue = [];
@@ -155,7 +176,7 @@ export class Apple2 implements CpuBus {
     const start = this.cycles;
     const end = start + budget;
     const cpu = this.cpu;
-    const board = this.mockingboardOn ? this.mockingboard : null;
+    const board = this.hasMockingboard ? this.mockingboard : null;
     while (this.cycles < end) {
       if (this.keyQueue.length !== 0 && !this.keyStrobe) this.pressKey(this.keyQueue.shift()!);
       if (board) {
@@ -235,15 +256,16 @@ export class Apple2 implements CpuBus {
     }
   }
 
-  /** $C100-$CFFF: slot ROMs, or the IIe's internal firmware. */
+  /** $C100-$CFFF: slot ROMs, or the IIe's internal firmware (the IIc has only its firmware). */
   private slotSpace(addr: number, value: number | null): number {
     const m = this.memory;
     const offset = addr - 0xc000;
     let result: number;
-    if (!this.isIIe) {
+    if (this.model === 'iic') return this.rom[offset];
+    if (!this.hasMmu) {
       const slot = (addr >> 8) & 7;
       if (addr < 0xc800 && slot === DISK_SLOT) return this.disk2.rom[addr & 0xff];
-      if (addr < 0xc800 && slot === MOCKINGBOARD_SLOT && this.mockingboardOn) return this.mockingboard.access(addr & 0xff, value, this.now);
+      if (addr < 0xc800 && slot === MOCKINGBOARD_SLOT && this.hasMockingboard) return this.mockingboard.access(addr & 0xff, value, this.now);
       return this.video.floatingBus(this.now);
     }
     if (addr >= 0xc800) {
@@ -257,8 +279,22 @@ export class Apple2 implements CpuBus {
       return this.rom[offset];
     }
     if (slot === DISK_SLOT) return this.disk2.rom[addr & 0xff];
-    if (slot === MOCKINGBOARD_SLOT && this.mockingboardOn) return this.mockingboard.access(addr & 0xff, value, this.now);
+    if (slot === MOCKINGBOARD_SLOT && this.hasMockingboard) return this.mockingboard.access(addr & 0xff, value, this.now);
     return this.video.floatingBus(this.now);
+  }
+
+  /** Puts one of the ROM's banks in (only the 32K IIc ROMs have two). */
+  private selectRomBank(bank: number): void {
+    this.romBank = bank % this.romBanks.length;
+    this.rom = this.romBanks[this.romBank];
+    this.updatePages();
+  }
+
+  /** The IIc's vertical blank flag: set as each blank begins, cleared by $C070. */
+  private vblFlag(now: number): boolean {
+    const intoFrame = (now - this.video.frameStart) % CYCLES_PER_FRAME;
+    const blankStart = now - intoFrame + VBL_START_CYCLE - (intoFrame < VBL_START_CYCLE ? CYCLES_PER_FRAME : 0);
+    return blankStart > this.vblClearedAt;
   }
 
   // --- I/O ------------------------------------------------------------------------
@@ -273,12 +309,12 @@ export class Apple2 implements CpuBus {
     const v = this.videoSwitches;
     if (reg < 0x10) {
       if (value === null) return this.keyLatch | (this.keyStrobe ? 0x80 : 0);
-      if (this.isIIe) this.memorySwitch(reg);
+      if (this.hasMmu) this.memorySwitch(reg);
       return 0;
     }
     if (reg < 0x20) {
       // Before the IIe, any of $C010-$C01F just cleared the keyboard strobe.
-      if (!this.isIIe) {
+      if (!this.hasMmu) {
         this.keyStrobe = false;
         return this.video.floatingBus(this.now);
       }
@@ -291,11 +327,12 @@ export class Apple2 implements CpuBus {
         case 0x12: return this.bit(m.lcReadRam);
         case 0x13: return this.bit(m.ramRd);
         case 0x14: return this.bit(m.ramWrt);
-        case 0x15: return this.bit(m.intCxRom);
+        // On the IIc, $C015 and $C017 are the (absent) mouse's interrupt flags.
+        case 0x15: return this.bit(this.model !== 'iic' && m.intCxRom);
         case 0x16: return this.bit(m.altZp);
-        case 0x17: return this.bit(m.slotC3Rom);
+        case 0x17: return this.bit(this.model !== 'iic' && m.slotC3Rom);
         case 0x18: return this.bit(v.store80);
-        case 0x19: return this.bit(!this.video.inVbl(this.now));
+        case 0x19: return this.bit(this.model === 'iic' ? this.vblFlag(this.now) : !this.video.inVbl(this.now));
         case 0x1a: return this.bit(v.text);
         case 0x1b: return this.bit(v.mixed);
         case 0x1c: return this.bit(v.page2);
@@ -305,10 +342,15 @@ export class Apple2 implements CpuBus {
       }
     }
     if (reg >= 0x30 && reg < 0x40) this.audio.toggleSpeaker(this.now);
+    else if (reg === 0x28 && this.model === 'iic') this.selectRomBank(this.romBank + 1);
     else if (reg >= 0x50 && reg < 0x60) this.displaySwitch(reg);
     else if (reg >= 0x60 && reg < 0x70) return this.gamePort(reg & 7) | (this.video.floatingBus(this.now) & 0x7f);
-    else if (reg >= 0x70 && reg < 0x80) this.paddleTriggered = this.now;
-    else if (reg >= 0x80 && reg < 0x90) this.languageCard(reg, value !== null);
+    else if ((reg === 0x7e || reg === 0x7f) && this.model === 'iic') return this.iouSwitch(reg, value);
+    else if (reg >= 0x70 && reg < 0x80) {
+      this.paddleTriggered = this.now;
+      this.vblClearedAt = this.now;
+    } else if (reg >= 0x80 && reg < 0x90) this.languageCard(reg, value !== null);
+    else if (this.model === 'iic' && ((reg >= 0x98 && reg < 0x9c) || (reg >= 0xa8 && reg < 0xac))) return this.serialPort(reg & 3);
     else if (reg >= 0x90) {
       const slot = (reg >> 4) - 8;
       if (slot === DISK_SLOT) return this.disk2.access(reg & 0x0f, value, this.now);
@@ -355,9 +397,28 @@ export class Apple2 implements CpuBus {
     }
   }
 
+  /** The IIc's $C07E and $C07F: IOUDIS when written; read, it (and double hi-res) in bit 7. */
+  private iouSwitch(reg: number, value: number | null): number {
+    if (value !== null) {
+      this.iouDisabled = reg === 0x7e;
+      return 0;
+    }
+    return this.bit(reg === 0x7e ? this.iouDisabled : this.videoSwitches.dhires);
+  }
+
+  /**
+   * The IIc's serial ports, $C098-$C09B and $C0A8-$C0AB: nothing is plugged in,
+   * so the 6551s only say their transmit registers are empty.
+   */
+  private serialPort(register: number): number {
+    return register === 1 ? 0x10 : 0;
+  }
+
   /** $C060-$C067: the cassette input, pushbuttons and paddle timers. */
   private gamePort(index: number): number {
     if (index === 0) return 0;
+    // The IIc's $C063 is its mouse button, which reads 0 while pressed.
+    if (index === 3 && this.model === 'iic') return this.buttons[2] ? 0 : 0x80;
     if (index < 4) return this.buttons[index - 1] ? 0x80 : 0;
     const timeout = this.paddleTriggered + this.paddles[index - 4] * PADDLE_CYCLES_PER_UNIT;
     return this.now < timeout ? 0x80 : 0;
@@ -397,7 +458,7 @@ export class Apple2 implements CpuBus {
   /** A key typed: its ASCII code goes in the keyboard latch with the strobe set. */
   pressKey(code: number): void {
     let key = code & 0x7f;
-    if (!this.isIIe) {
+    if (!this.hasMmu) {
       // The II and II Plus keyboards have only capitals, and nothing above them in ASCII.
       if (key >= 0x61 && key <= 0x7a) key -= 0x20;
       if (key >= 0x60) return;
@@ -413,16 +474,23 @@ export class Apple2 implements CpuBus {
   /** Becomes another model with its ROMs (followed by a power cycle). */
   setRoms(roms: Roms, model: Model = this.model): void {
     this.model = model;
-    this.rom = romImage(roms.main);
+    this.disk2.iwm = model === 'iic';
+    this.romBanks = romBanks(roms.main);
+    this.selectRomBank(0);
     (this.disk2 as { rom: Uint8Array }).rom = roms.disk;
-    this.video.setCharRom(roms.video, model === 'iie' ? 'iie' : 'ii');
-    this.cpu.setVariant(isEnhancedRom(roms.main) ? 'cmos' : 'nmos');
-    this.updatePages();
+    this.video.setCharRom(roms.video, this.hasMmu ? 'iie' : 'ii');
+    this.cpu.setVariant(cpuFor(roms.main, model));
+    this.setMockingboard(this.mockingboardOn);
+  }
+
+  /** The Mockingboard goes in slot 4, if it is switched on; the IIc has no slots. */
+  get hasMockingboard(): boolean {
+    return this.mockingboardOn && this.model !== 'iic';
   }
 
   setMockingboard(on: boolean): void {
     this.mockingboardOn = on;
-    this.audio.mockingboard = on ? this.mockingboard : null;
+    this.audio.mockingboard = this.hasMockingboard ? this.mockingboard : null;
     this.cpu.irqLine = false;
   }
 
@@ -434,7 +502,7 @@ export class Apple2 implements CpuBus {
 
   loadState(state: StateNode): void {
     restoreState(this, state);
-    this.updatePages();
+    this.selectRomBank(this.romBank);
     this.audio.resync(this.cycles);
   }
 }

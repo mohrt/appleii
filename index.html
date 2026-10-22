@@ -33,6 +33,7 @@
               Machine
               <select name="machine" aria-label="Machine">
                 <option value="iie" selected>Apple IIe (1983): 128K, 80 columns, double graphics</option>
+                <option value="iic">Apple IIc (1984): the IIe as a portable, no slots</option>
                 <option value="iiplus">Apple II Plus (1979): Applesoft BASIC, 64K</option>
                 <option value="ii">Apple II (1977): Integer BASIC, 64K</option>
               </select>
@@ -52,9 +53,21 @@
               </p>
               <p class="rom-status"></p>
             </li>
-            <li data-rom="video" data-machines="iie">
+            <li data-rom="iic" data-machines="iic">
+              <p class="rom-heading"><strong>Apple IIc ROM</strong> <span class="rom-need">Required</span></p>
+              <p class="rom-detail">
+                The IIc's firmware: 16 KB (16,384 bytes) for the first IIc, or 32 KB (32,768 bytes) for ROM 0, 3 or 4
+                (342-0033, 342-0445). The IIc boots its drive from this ROM, so it needs no Disk II ROM.
+              </p>
+              <p class="rom-names">Often named <code>apple2c.rom</code> or <code>342-0445-b.bin</code></p>
+              <p class="rom-status"></p>
+            </li>
+            <li data-rom="video" data-machines="iie iic">
               <p class="rom-heading"><strong>Video ROM</strong> <span class="rom-need">Required</span></p>
-              <p class="rom-detail">The characters on the screen, chip 342-0265 (or the original IIe's 342-0133). 4 KB (4,096 bytes).</p>
+              <p class="rom-detail">
+                The characters on the screen, chip 342-0265 (the IIc's 341-0265 is the same; the original IIe's is 342-0133).
+                4 KB (4,096 bytes).
+              </p>
               <p class="rom-names">
                 Often named <code>Apple2e_Enhanced_Video.rom</code> or <code>342-0265-a.chr</code>
               </p>
@@ -126,7 +139,7 @@
             <option value="amber">Amber monitor</option>
             <option value="white">White monitor</option>
           </select>
-          <label class="toolbar-check" title="A Mockingboard sound card in slot 4, for games with music">
+          <label class="toolbar-check" title="A Mockingboard sound card in slot 4, for games with music (the IIc has no slots)">
             <input type="checkbox" name="mockingboard" checked /> Mockingboard
           </label>
         </span>

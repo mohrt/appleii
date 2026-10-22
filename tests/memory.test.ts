@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { testMachine } from './helpers/rom';
+import { Apple2 } from '../src/apple2';
+import { testMachine, testRoms } from './helpers/rom';
 
 describe('the IIe memory map', () => {
   it('reads the ROM above $D000 and writes nowhere there at power on', () => {
@@ -166,5 +167,45 @@ describe('the speaker', () => {
     expect(samples.length).toBeGreaterThan(9000);
     const peak = samples.reduce((max, value) => Math.max(max, Math.abs(value)), 0);
     expect(peak).toBeGreaterThan(0.1);
+  });
+});
+
+describe('the Apple IIc', () => {
+  /** A 32K IIc ROM whose two banks hold their bank number at $D000. */
+  function iic(): Apple2 {
+    const roms = testRoms();
+    const main = new Uint8Array(0x8000);
+    main.set(roms.main);
+    main.set(roms.main, 0x4000);
+    main[0xfbc0 - 0xc000] = main[0x4000 + 0xfbc0 - 0xc000] = 0x00;
+    main[0xd000 - 0xc000] = 0;
+    main[0x4000 + 0xd000 - 0xc000] = 1;
+    return new Apple2({ ...roms, main }, 'iic');
+  }
+
+  it('switches its ROM banks at $C028, and has its own firmware in every slot', () => {
+    const apple = iic();
+    expect(apple.read(0xd000)).toBe(0);
+    apple.write(0xc028, 0);
+    expect(apple.read(0xd000)).toBe(1);
+    apple.write(0xc028, 0);
+    expect(apple.read(0xd000)).toBe(0);
+    expect(apple.read(0xc300)).toBe(0xc3);
+    expect(apple.read(0xc601)).not.toBe(0x20); // no Disk II card: its own ROM
+  });
+
+  it('sets its vertical blank flag as each blank begins, until $C070 clears it', () => {
+    const apple = iic();
+    const lineCycles = 65;
+    apple.runCycles(193 * lineCycles - (apple.cycles % (262 * lineCycles)));
+    expect(apple.read(0xc019) & 0x80).toBe(0x80);
+    apple.read(0xc070);
+    expect(apple.read(0xc019) & 0x80).toBe(0);
+  });
+
+  it('has no Mockingboard', () => {
+    const apple = iic();
+    apple.setMockingboard(true);
+    expect(apple.hasMockingboard).toBe(false);
   });
 });

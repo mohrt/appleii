@@ -16,11 +16,13 @@ const diskFiles = (dir: string) =>
 const MODELS: Record<Machine, TestModel> = { ii: 'ii', iiplus: 'plus', iie: 'original', 'enhanced-iie': 'enhanced' };
 const manifestPath = join(root, 'public', 'games', 'index.json');
 const freeGames = existsSync(manifestPath) ? parseGameManifest(JSON.parse(readFileSync(manifestPath, 'utf8'))) : [];
-/** Each disk with the machines to boot it on: the free games on the oldest one they say they run on too. */
+/** Each disk with the machines to boot it on: the free games on the IIc and the oldest machine they say they run on too. */
 const runs: { path: string; model: TestModel }[] = [...diskFiles(join(root, 'public', 'games')), ...diskFiles(join(root, 'disks'))].flatMap((path) => {
   const game = freeGames.find((entry) => join(root, 'public', 'games', entry.file) === path);
   const oldest = game?.requires ? MODELS[game.requires] : 'enhanced';
-  return [...new Set<TestModel>(['enhanced', oldest])].map((model) => ({ path, model }));
+  // The IIc runs everything the enhanced IIe does.
+  const models: TestModel[] = game ? ['enhanced', 'iic', oldest] : ['enhanced'];
+  return [...new Set(models)].map((model) => ({ path, model }));
 });
 const BOOT_SECONDS = Number(process.env.BOOT_SECONDS ?? 60);
 const PLAY_SECONDS = Number(process.env.PLAY_SECONDS ?? 10);

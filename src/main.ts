@@ -98,11 +98,11 @@ async function main(): Promise<void> {
     const focusScreen = () => canvas.focus();
 
     /** The machine as the free games know it: the enhanced IIe is told from the original by its ROM. */
-    const machine = (): Machine => (model === 'iie' && apple.enhanced ? 'enhanced-iie' : model);
+    const machine = (): Machine => (model === 'iic' || (model === 'iie' && apple.enhanced) ? 'enhanced-iie' : model);
 
     const updateStatus = () => {
-      const parts = [modelName(model, roms.main), apple.enhanced ? '65C02' : '6502', model === 'iie' ? '128K' : '64K'];
-      if (apple.mockingboardOn) parts.push('Mockingboard');
+      const parts = [modelName(model, roms.main), apple.enhanced ? '65C02' : '6502', apple.hasMmu ? '128K' : '64K'];
+      if (apple.hasMockingboard) parts.push('Mockingboard');
       status.textContent = parts.join(' · ');
     };
 
@@ -222,7 +222,8 @@ async function main(): Promise<void> {
       roms = newRoms;
       machineRecord.write({ model });
       apple.setRoms(roms, model);
-      capsLock.disabled = model !== 'iie';
+      capsLock.disabled = !apple.hasMmu;
+      mockingboard.disabled = model === 'iic';
       updateStatus();
       showGames();
     };
@@ -393,6 +394,7 @@ async function main(): Promise<void> {
       focusScreen();
     });
     apple.setMockingboard(mockingboard.checked);
+    mockingboard.disabled = model === 'iic';
 
     const sound = requireElement<HTMLInputElement>('input[name="sound"]');
     const volume = requireElement<HTMLInputElement>('input[name="volume"]');
@@ -420,7 +422,7 @@ async function main(): Promise<void> {
     keyboard.onReset = ctrlReset;
     const capsLock = requireElement<HTMLInputElement>('input[name="caps-lock"]');
     // The II and II Plus only have capitals.
-    capsLock.disabled = model !== 'iie';
+    capsLock.disabled = !apple.hasMmu;
     keyboard.capsLock = capsLock.checked;
     capsLock.addEventListener('change', () => {
       keyboard.capsLock = capsLock.checked;

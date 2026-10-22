@@ -10,6 +10,8 @@ const BUSY_WINDOW = 60_000;
  * picking up noise, which reads as random bits (as the WOZ spec describes).
  */
 const MAX_QUIET_CELLS = 3;
+/** IWM mode bit 2: the motor stops at once, without the one-second delay. */
+const IWM_IMMEDIATE_OFF = 0x04;
 /** A complete byte stays in the latch for at least this many further bit cells. */
 const LATCH_HOLD_CELLS = 2;
 /** Catching up after a long gap: beyond this many revolutions, the bits in between can't matter. */
@@ -30,6 +32,10 @@ export class DiskDrive {
  * cell, which reads bits into the data latch (a byte starts with its first 1
  * bit) or writes the latch's top bit out, so every disk is read bit by bit as
  * the real controller does.
+ *
+ * The IIc's IWM chip does the same in its Disk II mode, and adds a mode
+ * register (written with the motor off and Q6 and Q7 on), a status register
+ * and a write handshake register, which the IIc's ROM checks.
  */
 export class Disk2 {
   readonly drives = [new DiskDrive(), new DiskDrive()];
@@ -46,6 +52,10 @@ export class Disk2 {
   /** Cycles into the current bit cell. */
   cellPhase = 0;
   lastAccess = -BUSY_WINDOW;
+  /** The IIc's IWM: its registers answer as well as the Disk II's. */
+  iwm = false;
+  /** The IWM's mode register (5 bits). */
+  mode = 0;
   /** Bits read since a complete byte arrived in the latch, held until the byte has been readable for a while. */
   private heldBits = 0;
   private heldCount = 0;
@@ -87,7 +97,7 @@ export class Disk2 {
     } else {
       switch (offset) {
         case 0x8:
-          if (this.motorOn) this.motorStopsAt = cycle + MOTOR_OFF_DELAY;
+          if (this.motorOn) this.motorStopsAt = this.iwm && this.mode & IWM_IMMEDIATE_OFF ? cycle : cycle + MOTOR_OFF_DELAY;
           this.motorOn = false;
           break;
         case 0x9:
@@ -111,11 +121,19 @@ export class Disk2 {
           break;
       }
     }
+    const writeProtected = this.drive.disk?.writeProtected ?? false;
+    if (this.iwm && value !== null && this.q6 && this.q7 && offset & 1 && !this.spinning(cycle)) {
+      this.mode = value & 0x1f;
+      return 0;
+    }
     // Writing in load mode (Q6 and Q7 on) puts the byte in the shift register to be written.
     if (value !== null && this.q6 && this.q7) this.latch = value;
     if (offset & 1) return 0;
+    if (this.iwm && this.q6 && !this.q7) return (writeProtected ? 0x80 : 0) | (this.spinning(cycle) ? 0x20 : 0) | this.mode;
+    // The IWM's write handshake: ready for the next byte, and no underrun.
+    if (this.iwm && !this.q6 && this.q7) return 0xff;
     // Sensing write protect (Q6 on, Q7 off) reads the switch into the top bit.
-    if (this.q6 && !this.q7) return this.drive.disk?.writeProtected ? 0xff : 0x00;
+    if (this.q6 && !this.q7) return writeProtected ? 0xff : 0x00;
     return this.latch;
   }
 

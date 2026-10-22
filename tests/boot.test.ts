@@ -1,5 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { hasRoms, machine, runSeconds, screenText, typeText } from './helpers/machine';
+import { Apple2 } from '../src/apple2';
+import { hasRoms, loadRoms, machine, runSeconds, screenText, typeText } from './helpers/machine';
 
 describe.skipIf(!hasRoms)('booting with your ROMs', () => {
   it('shows the enhanced IIe banner and looks for a disk', () => {
@@ -80,4 +83,22 @@ describe.skipIf(!hasRoms)('the Apple II Plus and Apple II', () => {
     expect(text).toContain('>PRINT 6*7');
     expect(text).toContain('42');
   });
+});
+
+describe.skipIf(!hasRoms)('the Apple IIc', () => {
+  for (const rom of ['Apple2c_rom0.rom', 'Apple2c_rom3.rom', 'Apple2c_rom4.rom']) {
+    it(`starts with ${rom}, looks for its disk and drops into Applesoft on Ctrl-Reset`, () => {
+      const roms = loadRoms('iic');
+      const apple = new Apple2({ ...roms, main: new Uint8Array(readFileSync(join(import.meta.dirname, '..', 'roms', rom))) }, 'iic');
+      runSeconds(apple, 1);
+      expect(apple.enhanced).toBe(true);
+      expect(screenText(apple).join('\n')).toContain('Apple //c');
+      expect(apple.disk2.motorOn).toBe(true);
+      apple.reset();
+      runSeconds(apple, 0.5);
+      typeText(apple, 'PRINT 6*7\n');
+      runSeconds(apple, 0.3);
+      expect(screenText(apple)).toContain('42');
+    });
+  }
 });

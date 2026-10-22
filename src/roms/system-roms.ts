@@ -4,28 +4,31 @@ import { crc32 } from '../util/crc32';
 
 /**
  * The ROMs kept: the IIe's main ROM (or one of its two chips until both are
- * given) and video ROM, the II Plus's and the II's 12K ROMs and their 2K
+ * given) and video ROM (which the IIc uses too), the IIc's ROM, the II Plus's and the II's 12K ROMs and their 2K
  * character ROM, and the Disk II ROM all of them use.
  */
-export type RomKind = 'main' | 'mainCD' | 'mainEF' | 'video' | 'plus' | 'ii' | 'video2' | 'disk';
-export const ROM_KINDS: readonly RomKind[] = ['main', 'mainCD', 'mainEF', 'video', 'plus', 'ii', 'video2', 'disk'];
+export type RomKind = 'main' | 'mainCD' | 'mainEF' | 'video' | 'iic' | 'plus' | 'ii' | 'video2' | 'disk';
+export const ROM_KINDS: readonly RomKind[] = ['main', 'mainCD', 'mainEF', 'video', 'iic', 'plus', 'ii', 'video2', 'disk'];
 /** The rows of the setup panel. */
-export type RomSlot = 'main' | 'video' | 'plus' | 'ii' | 'video2' | 'disk';
+export type RomSlot = 'main' | 'video' | 'iic' | 'plus' | 'ii' | 'video2' | 'disk';
 /** The ROMs each model needs. */
 export const MODEL_ROMS: Record<Model, readonly RomSlot[]> = {
   iie: ['main', 'video', 'disk'],
+  // The IIc's disk firmware is in its own ROM.
+  iic: ['iic', 'video'],
   iiplus: ['plus', 'video2', 'disk'],
   ii: ['ii', 'video2', 'disk'],
 };
-export const MODEL_NAMES: Record<Model, string> = { ii: 'Apple II', iiplus: 'Apple II Plus', iie: 'Apple IIe' };
+export const MODEL_NAMES: Record<Model, string> = { ii: 'Apple II', iiplus: 'Apple II Plus', iie: 'Apple IIe', iic: 'Apple IIc' };
 
 const MAIN_SIZE = 0x4000;
+const IIC_SIZE = 0x8000;
 const CHIP_SIZE = 0x2000;
 const II_SIZE = 0x3000;
 const VIDEO_SIZE = 0x1000;
 const VIDEO2_SIZE = 0x800;
 const DISK_SIZE = 0x100;
-export const ROM_FILE_SIZES = new Set([MAIN_SIZE, CHIP_SIZE, II_SIZE, VIDEO_SIZE, VIDEO2_SIZE, DISK_SIZE]);
+export const ROM_FILE_SIZES = new Set([MAIN_SIZE, IIC_SIZE, CHIP_SIZE, II_SIZE, VIDEO_SIZE, VIDEO2_SIZE, DISK_SIZE]);
 
 /** CRC-32s of Apple's chips. */
 const KNOWN: Record<number, { kind: RomKind; title: string }> = {
@@ -35,6 +38,9 @@ const KNOWN: Record<number, { kind: RomKind; title: string }> = {
   0xfc3d59d8: { kind: 'mainEF', title: 'original IIe, 342-0134' },
   0x2651014d: { kind: 'video', title: 'enhanced IIe video, 342-0265' },
   0xb081df66: { kind: 'video', title: 'original IIe video, 342-0133' },
+  0xc8b979b3: { kind: 'iic', title: 'Apple IIc, ROM 0 (342-0033)' },
+  0xbc5a79ff: { kind: 'iic', title: 'Apple IIc, ROM 3 (342-0445-A)' },
+  0x06f53328: { kind: 'iic', title: 'Apple IIc, ROM 4 (342-0445-B)' },
   0x1d05c1b1: { kind: 'plus', title: 'Apple II Plus, Applesoft and the Autostart Monitor' },
   0x2af3a6c1: { kind: 'ii', title: 'Apple II, Integer BASIC and the Monitor' },
   0x64f415c6: { kind: 'video2', title: 'Apple II character ROM, 341-0036' },
@@ -77,6 +83,13 @@ function isIIeRom(main: Uint8Array): boolean {
   return id === 0x06 && (version === 0xea || version === 0xe0);
 }
 
+function isIIcRom(main: Uint8Array): boolean {
+  return main[0xfbb3 - 0xc000] === 0x06 && main[0xfbc0 - 0xc000] === 0x00;
+}
+
+/** The IIc's ROM version, at $FBBF: $FF for the first, then 0, 3, 4 and 5 (the IIc Plus). */
+const iicVersion = (main: Uint8Array) => main[0xfbbf - 0xc000];
+
 /** The Disk II's 16-sector boot ROM has the slot signature bytes $20, $00, $03 and $3C at 1, 3, 5 and 7. */
 function isDiskRom(data: Uint8Array): boolean {
   return data[1] === 0x20 && data[3] === 0x00 && data[5] === 0x03 && data[7] === 0x3c;
@@ -96,10 +109,13 @@ export function identifyRom(name: string, data: Uint8Array): IdentifiedRom {
   const unknown = 'not one of Apple\'s ROMs; some software may not work with it';
   switch (data.length) {
     case MAIN_SIZE:
-      if (!isIIeRom(data)) {
-        throw new Error(`${baseName(name)} is 16K but not an Apple IIe ROM (Apple IIc ROMs won't work: the IIc has no slots).`);
-      }
+      if (isIIcRom(data)) return { kind: 'iic', name, data, warning: unknown };
+      if (!isIIeRom(data)) throw new Error(`${baseName(name)} is 16K but not an Apple IIe or IIc ROM.`);
       return { kind: 'main', name, data, warning: KNOWN[crc32(data.subarray(0, CHIP_SIZE))] ? null : unknown };
+    case IIC_SIZE:
+      if (!isIIcRom(data)) throw new NotARom(`${baseName(name)} is 32K but not an Apple IIc ROM.`);
+      if (iicVersion(data) === 0x05) throw new Error(`${baseName(name)} is the IIc Plus's ROM, which this emulator doesn't run: use a IIc ROM.`);
+      return { kind: 'iic', name, data, warning: unknown };
     case CHIP_SIZE:
       return { kind: looksLikeEfChip(data) ? 'mainEF' : 'mainCD', name, data, warning: unknown };
     case VIDEO_SIZE:
@@ -116,7 +132,7 @@ export function identifyRom(name: string, data: Uint8Array): IdentifiedRom {
     default:
       throw new NotARom(
         `${baseName(name)} is ${data.length.toLocaleString('en')} bytes, which isn't an Apple II ROM. ` +
-          "The IIe's ROM is 16,384 bytes (or two chips of 8,192) and its video ROM 4,096; the II's and II Plus's ROM " +
+          "The IIe's ROM is 16,384 bytes (or two chips of 8,192) and its video ROM 4,096; the IIc's ROM is 16,384 or 32,768; the II's and II Plus's ROM " +
           'is 12,288 bytes and their character ROM 2,048; the Disk II ROM is 256.',
       );
   }
@@ -143,13 +159,18 @@ export function hasRequiredRoms(roms: SystemRoms, model: Model): boolean {
 /** The ROMs a model maps in; throws if any is missing. */
 export function machineRoms(roms: SystemRoms, model: Model): Roms {
   if (!hasRequiredRoms(roms, model)) throw new Error(`The ${MODEL_NAMES[model]} needs its ROMs: load them in Machine setup.`);
-  const main = model === 'iie' ? mainRom(roms)! : roms[model === 'iiplus' ? 'plus' : 'ii']!.data;
-  const video = roms[model === 'iie' ? 'video' : 'video2']!.data;
-  return { main, video, disk: roms.disk!.data };
+  const main = model === 'iie' ? mainRom(roms)! : roms[model === 'iic' ? 'iic' : model === 'iiplus' ? 'plus' : 'ii']!.data;
+  const video = roms[model === 'iie' || model === 'iic' ? 'video' : 'video2']!.data;
+  // The IIc boots its drive from its own ROM; the Disk II ROM is only there for a machine with slots.
+  return { main, video, disk: roms.disk?.data ?? new Uint8Array(DISK_SIZE) };
 }
 
 /** The model's name, telling the enhanced IIe from the original by its ROM. */
 export function modelName(model: Model, main: Uint8Array): string {
+  if (model === 'iic') {
+    const version = iicVersion(main);
+    return version === 0xff ? 'Apple IIc' : `Apple IIc (ROM ${version})`;
+  }
   return model === 'iie' && isEnhancedRom(main) ? 'Enhanced Apple IIe' : MODEL_NAMES[model];
 }
 

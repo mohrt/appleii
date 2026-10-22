@@ -41,6 +41,7 @@ type TypedArray =
  */
 const SKIPPED_FIELDS = new Set([
   'rom',
+  'romBanks',
   'charRom',
   'disk',
   'framebuffer',

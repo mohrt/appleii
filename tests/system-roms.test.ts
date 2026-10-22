@@ -13,9 +13,6 @@ describe('identifying ROMs', () => {
   });
 
   it('turns away other Apples', () => {
-    const iic = testRoms().main.slice();
-    iic[0xfbc0 - 0xc000] = 0x00;
-    expect(() => identifyRom('iic.rom', iic)).toThrow(/IIc/);
     expect(() => identifyRom('p6.rom', new Uint8Array(256))).toThrow(NotARom);
   });
 
@@ -33,6 +30,20 @@ describe('identifying ROMs', () => {
     expect(hasRequiredRoms(roms, 'iiplus')).toBe(true);
     expect(hasRequiredRoms(roms, 'ii')).toBe(false);
     expect(machineRoms(roms, 'iiplus').main).toBe(applesoft);
+  });
+
+  it('takes IIc ROMs of 16K or 32K, but not the IIc Plus\'s, and needs no Disk II ROM for the IIc', () => {
+    const iic = testRoms().main.slice();
+    iic[0xfbc0 - 0xc000] = 0x00; // the IIc's ID
+    expect(identifyRom('iic.rom', iic).kind).toBe('iic');
+    const banked = new Uint8Array(0x8000);
+    banked.set(iic);
+    expect(identifyRom('iic32.rom', banked).kind).toBe('iic');
+    banked[0xfbbf - 0xc000] = 0x05;
+    expect(() => identifyRom('iicplus.rom', banked)).toThrow(/IIc Plus/);
+    const roms = { iic: { name: 'c', data: iic }, video: { name: 'v', data: testRoms().video } };
+    expect(hasRequiredRoms(roms, 'iic')).toBe(true);
+    expect(machineRoms(roms, 'iic').main).toBe(iic);
   });
 
   it('tells the two 8K chips apart by the vectors at the end of the $E000 one', () => {
@@ -63,6 +74,7 @@ describe('identifying ROMs', () => {
     expect(identifyRom('Apple2_Plus.rom', loadRoms('plus').main)).toMatchObject({ kind: 'plus', warning: null });
     expect(identifyRom('Apple2.rom', loadRoms('ii').main)).toMatchObject({ kind: 'ii', warning: null });
     expect(identifyRom('Apple2_Video.rom', loadRoms('plus').video)).toMatchObject({ kind: 'video2', warning: null });
+    expect(identifyRom('apple2c.rom', loadRoms('iic').main)).toMatchObject({ kind: 'iic', warning: null });
   });
 });
 

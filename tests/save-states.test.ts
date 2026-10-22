@@ -33,6 +33,13 @@ describe('save states', () => {
     expect(await decodeSession(bytes)).toMatchObject({ model: 'iie', modelName: 'Enhanced Apple IIe' });
   });
 
+  it('keep the model of every machine, the IIc included', async () => {
+    for (const model of ['ii', 'iiplus', 'iie', 'iic'] as const) {
+      const bytes = await encodeSession({ machine: { fields: {} }, model, modelName: model, romsCrc: 1, mockingboard: false, disks: [] });
+      expect((await decodeSession(bytes)).model).toBe(model);
+    }
+  });
+
   it('turn away files that are not save states', async () => {
     await expect(decodeSession(new Uint8Array([1, 2, 3]))).rejects.toThrow('not an Apple II save state');
   });

@@ -67,7 +67,7 @@ export class SaveStates {
 }
 
 const MAGIC = 'appleii-session';
-const MODELS: readonly Model[] = ['ii', 'iiplus', 'iie', 'iic'];
+const MODELS: readonly Model[] = ['ii', 'iiplus', 'iie', 'iic', 'iicplus'];
 
 export async function encodeSession(session: Session): Promise<Uint8Array> {
   return encodeState({ magic: MAGIC, ...session });

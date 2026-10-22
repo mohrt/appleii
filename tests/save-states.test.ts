@@ -34,7 +34,7 @@ describe('save states', () => {
   });
 
   it('keep the model of every machine, the IIc included', async () => {
-    for (const model of ['ii', 'iiplus', 'iie', 'iic'] as const) {
+    for (const model of ['ii', 'iiplus', 'iie', 'iic', 'iicplus'] as const) {
       const bytes = await encodeSession({ machine: { fields: {} }, model, modelName: model, romsCrc: 1, mockingboard: false, disks: [] });
       expect((await decodeSession(bytes)).model).toBe(model);
     }

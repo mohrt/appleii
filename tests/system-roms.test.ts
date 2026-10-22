@@ -32,7 +32,7 @@ describe('identifying ROMs', () => {
     expect(machineRoms(roms, 'iiplus').main).toBe(applesoft);
   });
 
-  it('takes IIc ROMs of 16K or 32K, but not the IIc Plus\'s, and needs no Disk II ROM for the IIc', () => {
+  it('takes IIc ROMs of 16K or 32K, tells the IIc Plus\'s apart, and needs no Disk II ROM for the IIc', () => {
     const iic = testRoms().main.slice();
     iic[0xfbc0 - 0xc000] = 0x00; // the IIc's ID
     expect(identifyRom('iic.rom', iic).kind).toBe('iic');
@@ -40,7 +40,7 @@ describe('identifying ROMs', () => {
     banked.set(iic);
     expect(identifyRom('iic32.rom', banked).kind).toBe('iic');
     banked[0xfbbf - 0xc000] = 0x05;
-    expect(() => identifyRom('iicplus.rom', banked)).toThrow(/IIc Plus/);
+    expect(identifyRom('iicplus.rom', banked).kind).toBe('iicplus');
     const roms = { iic: { name: 'c', data: iic }, video: { name: 'v', data: testRoms().video } };
     expect(hasRequiredRoms(roms, 'iic')).toBe(true);
     expect(machineRoms(roms, 'iic').main).toBe(iic);

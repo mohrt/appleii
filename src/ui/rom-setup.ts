@@ -19,7 +19,7 @@ import {
 
 /** ROM collections often hold a zip per machine, so zips are opened this many levels down. */
 const MAX_ZIP_DEPTH = 2;
-const SLOTS: readonly RomSlot[] = ['main', 'iic', 'video', 'plus', 'ii', 'video2', 'disk'];
+const SLOTS: readonly RomSlot[] = ['main', 'iic', 'iicplus', 'video', 'plus', 'ii', 'video2', 'disk'];
 
 const isMacMetadata = (name: string) => name.split('/').pop()!.startsWith('.') || name.startsWith('__MACOSX/');
 

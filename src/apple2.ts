@@ -1,6 +1,8 @@
 import { Cpu6502, type CpuBus } from './cpu/cpu6502';
 import { Disk2 } from './disk/disk2';
+import type { Disk35 } from './disk/disk35';
 import type { FloppyDisk } from './disk/floppy';
+import { Mig } from './io/mig';
 import { AudioMixer } from './sound/audio-mixer';
 import { Mockingboard } from './sound/mockingboard';
 import { captureState, restoreState, type StateNode } from './state/snapshot';
@@ -9,13 +11,20 @@ import { CYCLES_PER_FRAME, CYCLES_PER_LINE, SCREEN_LINES, Video, VideoSwitches }
 /** 14.31818 MHz / 14, with every 65th cycle stretched by two 14M ticks. */
 export const CLOCK_HZ = 1_020_484;
 export const DISK_SLOT = 6;
+/** The IWM drive select the IIc Plus's internal 3.5" drive answers to (the first is the disk port's). */
+const INTERNAL_35_DRIVE = 1;
+/** The IIc Plus's accelerator runs the 65C02 at 4 MHz. */
+const ACCELERATION = 4;
 export const MOCKINGBOARD_SLOT = 4;
 /** Each count of a paddle's value holds its timer for about 11 µs. */
 const PADDLE_CYCLES_PER_UNIT = 11;
 export const PADDLE_CENTRE = 127;
 
-/** The Apple II (with Integer BASIC), the Apple II Plus (with Applesoft), the Apple IIe or the Apple IIc. */
-export type Model = 'ii' | 'iiplus' | 'iie' | 'iic';
+/** The Apple II (with Integer BASIC), the Apple II Plus (with Applesoft), the Apple IIe, the Apple IIc or the IIc Plus. */
+export type Model = 'ii' | 'iiplus' | 'iie' | 'iic' | 'iicplus';
+
+/** The IIc and the IIc Plus: no slots, built-in ports, and an IWM for the disks. */
+export const isIIcModel = (model: Model) => model === 'iic' || model === 'iicplus';
 
 export interface Roms {
   /**
@@ -51,7 +60,7 @@ function romBanks(main: Uint8Array): Uint8Array[] {
 }
 
 /** Every IIc has a 65C02; so has the enhanced IIe. */
-const cpuFor = (main: Uint8Array, model: Model) => (model === 'iic' || isEnhancedRom(main) ? 'cmos' : 'nmos');
+const cpuFor = (main: Uint8Array, model: Model) => (isIIcModel(model) || isEnhancedRom(main) ? 'cmos' : 'nmos');
 
 /** The IIe's memory soft switches (the MMU) and the language card (the II and II Plus's, in slot 0). */
 class MemorySwitches {
@@ -92,10 +101,14 @@ export class Apple2 implements CpuBus {
   readonly memory = new MemorySwitches();
   readonly cpu: Cpu6502;
   readonly disk2: Disk2;
+  /** The IIc Plus's MIG: RAM for its 3.5" drive firmware, and that drive's switches. */
+  readonly mig: Mig;
   readonly mockingboard = new Mockingboard();
   readonly audio = new AudioMixer();
   mockingboardOn = true;
   cycles = 0;
+  /** CPU cycles at 4 MHz not yet making up a whole 1 MHz cycle. */
+  fastCycles = 0;
 
   // Keyboard and game port
   keyLatch = 0;
@@ -126,7 +139,8 @@ export class Apple2 implements CpuBus {
     this.rom = this.romBanks[0];
     this.cpu = new Cpu6502(this, cpuFor(roms.main, model));
     this.disk2 = new Disk2(roms.disk);
-    this.disk2.iwm = model === 'iic';
+    this.disk2.iwm = isIIcModel(model);
+    this.mig = new Mig(this.disk2);
     this.video = new Video(this.videoSwitches, this.main, this.aux, roms.video, this.hasMmu ? 'iie' : 'ii');
     this.audio.mockingboard = this.mockingboard;
     this.powerOn();
@@ -138,7 +152,7 @@ export class Apple2 implements CpuBus {
 
   /** The IIe and IIc: auxiliary memory, 80 columns, double graphics and the MMU and IOU soft switches. */
   get hasMmu(): boolean {
-    return this.model === 'iie' || this.model === 'iic';
+    return this.model === 'iie' || isIIcModel(this.model);
   }
 
   // --- Power and reset ------------------------------------------------------------
@@ -155,6 +169,8 @@ export class Apple2 implements CpuBus {
     this.keyQueue = [];
     this.disk2.reset();
     this.disk2.drives.forEach((drive) => (drive.quarterTrack = 0));
+    this.disk2.drives35.forEach((drive) => (drive.cylinder = 0));
+    this.mig.ram.fill(0);
     this.reset();
   }
 
@@ -164,6 +180,7 @@ export class Apple2 implements CpuBus {
     const video = this.videoSwitches;
     video.store80 = video.col80 = video.altChar = false;
     this.disk2.reset();
+    this.mig.reset();
     this.mockingboard.reset();
     this.updatePages();
     this.cpu.reset();
@@ -183,7 +200,13 @@ export class Apple2 implements CpuBus {
         board.catchUp(this.cycles);
         cpu.irqLine = board.irq;
       }
-      this.cycles += cpu.step();
+      if (this.accelerated) {
+        this.fastCycles += cpu.step();
+        this.cycles += Math.floor(this.fastCycles / ACCELERATION);
+        this.fastCycles %= ACCELERATION;
+      } else {
+        this.cycles += cpu.step();
+      }
       this.video.catchUp(this.cycles);
     }
     this.audio.run(this.cycles);
@@ -192,7 +215,17 @@ export class Apple2 implements CpuBus {
 
   /** The cycle of the bus access the current instruction is making. */
   private get now(): number {
+    if (this.accelerated) return this.cycles + Math.floor((this.fastCycles + this.cpu.accessCycle) / ACCELERATION);
     return this.cycles + this.cpu.accessCycle;
+  }
+
+  /**
+   * The IIc Plus's 4 MHz accelerator, which its firmware runs while it uses
+   * the 3.5" drive (at 1 MHz it couldn't keep up with the disk). The rest of
+   * the time this IIc Plus runs at 1 MHz, as with the accelerator switched off.
+   */
+  private get accelerated(): boolean {
+    return this.disk2.drive35 && this.model === 'iicplus';
   }
 
   // --- Memory map -----------------------------------------------------------------
@@ -256,12 +289,14 @@ export class Apple2 implements CpuBus {
     }
   }
 
-  /** $C100-$CFFF: slot ROMs, or the IIe's internal firmware (the IIc has only its firmware). */
+  /** $C100-$CFFF: slot ROMs, or the IIe's internal firmware (the IIc has only its firmware, and the IIc Plus its MIG). */
   private slotSpace(addr: number, value: number | null): number {
     const m = this.memory;
     const offset = addr - 0xc000;
     let result: number;
-    if (this.model === 'iic') return this.rom[offset];
+    // The MIG answers alongside the second ROM bank (the 3.5" drive's firmware); the first has code there.
+    if (this.model === 'iicplus' && addr >= 0xcc00 && this.romBank === 1) return this.mig.access(addr, value) ?? this.rom[offset];
+    if (isIIcModel(this.model)) return this.rom[offset];
     if (!this.hasMmu) {
       const slot = (addr >> 8) & 7;
       if (addr < 0xc800 && slot === DISK_SLOT) return this.disk2.rom[addr & 0xff];
@@ -328,11 +363,11 @@ export class Apple2 implements CpuBus {
         case 0x13: return this.bit(m.ramRd);
         case 0x14: return this.bit(m.ramWrt);
         // On the IIc, $C015 and $C017 are the (absent) mouse's interrupt flags.
-        case 0x15: return this.bit(this.model !== 'iic' && m.intCxRom);
+        case 0x15: return this.bit(!isIIcModel(this.model) && m.intCxRom);
         case 0x16: return this.bit(m.altZp);
-        case 0x17: return this.bit(this.model !== 'iic' && m.slotC3Rom);
+        case 0x17: return this.bit(!isIIcModel(this.model) && m.slotC3Rom);
         case 0x18: return this.bit(v.store80);
-        case 0x19: return this.bit(this.model === 'iic' ? this.vblFlag(this.now) : !this.video.inVbl(this.now));
+        case 0x19: return this.bit(isIIcModel(this.model) ? this.vblFlag(this.now) : !this.video.inVbl(this.now));
         case 0x1a: return this.bit(v.text);
         case 0x1b: return this.bit(v.mixed);
         case 0x1c: return this.bit(v.page2);
@@ -342,15 +377,15 @@ export class Apple2 implements CpuBus {
       }
     }
     if (reg >= 0x30 && reg < 0x40) this.audio.toggleSpeaker(this.now);
-    else if (reg === 0x28 && this.model === 'iic') this.selectRomBank(this.romBank + 1);
+    else if (reg === 0x28 && isIIcModel(this.model)) this.selectRomBank(this.romBank + 1);
     else if (reg >= 0x50 && reg < 0x60) this.displaySwitch(reg);
     else if (reg >= 0x60 && reg < 0x70) return this.gamePort(reg & 7) | (this.video.floatingBus(this.now) & 0x7f);
-    else if ((reg === 0x7e || reg === 0x7f) && this.model === 'iic') return this.iouSwitch(reg, value);
+    else if ((reg === 0x7e || reg === 0x7f) && isIIcModel(this.model)) return this.iouSwitch(reg, value);
     else if (reg >= 0x70 && reg < 0x80) {
       this.paddleTriggered = this.now;
       this.vblClearedAt = this.now;
     } else if (reg >= 0x80 && reg < 0x90) this.languageCard(reg, value !== null);
-    else if (this.model === 'iic' && ((reg >= 0x98 && reg < 0x9c) || (reg >= 0xa8 && reg < 0xac))) return this.serialPort(reg & 3);
+    else if (isIIcModel(this.model) && ((reg >= 0x98 && reg < 0x9c) || (reg >= 0xa8 && reg < 0xac))) return this.serialPort(reg & 3);
     else if (reg >= 0x90) {
       const slot = (reg >> 4) - 8;
       if (slot === DISK_SLOT) return this.disk2.access(reg & 0x0f, value, this.now);
@@ -418,7 +453,7 @@ export class Apple2 implements CpuBus {
   private gamePort(index: number): number {
     if (index === 0) return 0;
     // The IIc's $C063 is its mouse button, which reads 0 while pressed.
-    if (index === 3 && this.model === 'iic') return this.buttons[2] ? 0 : 0x80;
+    if (index === 3 && isIIcModel(this.model)) return this.buttons[2] ? 0 : 0x80;
     if (index < 4) return this.buttons[index - 1] ? 0x80 : 0;
     const timeout = this.paddleTriggered + this.paddles[index - 4] * PADDLE_CYCLES_PER_UNIT;
     return this.now < timeout ? 0x80 : 0;
@@ -471,10 +506,19 @@ export class Apple2 implements CpuBus {
     this.disk2.drives[drive].disk = disk;
   }
 
+  /** The IIc Plus's internal 3.5" drive, which the IWM selects as its second drive. */
+  insertDisk35(disk: Disk35 | null): void {
+    this.disk2.drives35[INTERNAL_35_DRIVE].insert(disk);
+  }
+
+  get disk35(): Disk35 | null {
+    return this.disk2.drives35[INTERNAL_35_DRIVE].disk;
+  }
+
   /** Becomes another model with its ROMs (followed by a power cycle). */
   setRoms(roms: Roms, model: Model = this.model): void {
     this.model = model;
-    this.disk2.iwm = model === 'iic';
+    this.disk2.iwm = isIIcModel(model);
     this.romBanks = romBanks(roms.main);
     this.selectRomBank(0);
     (this.disk2 as { rom: Uint8Array }).rom = roms.disk;
@@ -485,7 +529,7 @@ export class Apple2 implements CpuBus {
 
   /** The Mockingboard goes in slot 4, if it is switched on; the IIc has no slots. */
   get hasMockingboard(): boolean {
-    return this.mockingboardOn && this.model !== 'iic';
+    return this.mockingboardOn && !isIIcModel(this.model);
   }
 
   setMockingboard(on: boolean): void {

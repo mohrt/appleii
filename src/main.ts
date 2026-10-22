@@ -1,5 +1,5 @@
 import { AudioOutput } from './audio/audio-output';
-import { CLOCK_HZ, type Model } from './apple2';
+import { CLOCK_HZ, isIIcModel, type Model } from './apple2';
 import { FloppyDisk } from './disk/floppy';
 import { STATE_EXTENSION, filesFrom, firstDisk, readMedia, titleFromFileName } from './disk/load';
 import { Emulator } from './emulator';
@@ -98,7 +98,7 @@ async function main(): Promise<void> {
     const focusScreen = () => canvas.focus();
 
     /** The machine as the free games know it: the enhanced IIe is told from the original by its ROM. */
-    const machine = (): Machine => (model === 'iic' || (model === 'iie' && apple.enhanced) ? 'enhanced-iie' : model);
+    const machine = (): Machine => (isIIcModel(model) || (model === 'iie' && apple.enhanced) ? 'enhanced-iie' : model);
 
     const updateStatus = () => {
       const parts = [modelName(model, roms.main), apple.enhanced ? '65C02' : '6502', apple.hasMmu ? '128K' : '64K'];
@@ -223,7 +223,7 @@ async function main(): Promise<void> {
       machineRecord.write({ model });
       apple.setRoms(roms, model);
       capsLock.disabled = !apple.hasMmu;
-      mockingboard.disabled = model === 'iic';
+      mockingboard.disabled = isIIcModel(model);
       updateStatus();
       showGames();
     };
@@ -394,7 +394,7 @@ async function main(): Promise<void> {
       focusScreen();
     });
     apple.setMockingboard(mockingboard.checked);
-    mockingboard.disabled = model === 'iic';
+    mockingboard.disabled = isIIcModel(model);
 
     const sound = requireElement<HTMLInputElement>('input[name="sound"]');
     const volume = requireElement<HTMLInputElement>('input[name="volume"]');

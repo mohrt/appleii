@@ -34,6 +34,7 @@
               <select name="machine" aria-label="Machine">
                 <option value="iie" selected>Apple IIe (1983): 128K, 80 columns, double graphics</option>
                 <option value="iic">Apple IIc (1984): the IIe as a portable, no slots</option>
+                <option value="iicplus">Apple IIc Plus (1988): the IIc with a built-in 3.5" drive</option>
                 <option value="iiplus">Apple II Plus (1979): Applesoft BASIC, 64K</option>
                 <option value="ii">Apple II (1977): Integer BASIC, 64K</option>
               </select>
@@ -62,7 +63,16 @@
               <p class="rom-names">Often named <code>apple2c.rom</code> or <code>342-0445-b.bin</code></p>
               <p class="rom-status"></p>
             </li>
-            <li data-rom="video" data-machines="iie iic">
+            <li data-rom="iicplus" data-machines="iicplus">
+              <p class="rom-heading"><strong>Apple IIc Plus ROM</strong> <span class="rom-need">Required</span></p>
+              <p class="rom-detail">
+                The IIc Plus's firmware, ROM 5 (341-0625): 32 KB (32,768 bytes). It drives the built-in 3.5" drive and the
+                disk port, so it needs no Disk II ROM.
+              </p>
+              <p class="rom-names">Often named <code>apple2cp.rom</code> or <code>341-0625-a.256</code></p>
+              <p class="rom-status"></p>
+            </li>
+            <li data-rom="video" data-machines="iie iic iicplus">
               <p class="rom-heading"><strong>Video ROM</strong> <span class="rom-need">Required</span></p>
               <p class="rom-detail">
                 The characters on the screen, chip 342-0265 (the IIc's 341-0265 is the same; the original IIe's is 342-0133).

@@ -1,3 +1,4 @@
+import { trackGameLoaded } from './analytics';
 import { AudioOutput } from './audio/audio-output';
 import { CLOCK_HZ, type Model } from './apple2';
 import { FloppyDisk } from './disk/floppy';
@@ -227,8 +228,8 @@ async function main(): Promise<void> {
       updateStatus();
       showGames();
     };
-    /** Puts one disk image in a drive, or loads a save state. */
-    const openDisk = async (file: File, drive: number) => {
+    /** Puts one disk image in a drive, or loads a save state. Disk swaps aren't counted as new games. */
+    const openDisk = async (file: File, drive: number, newGame = false) => {
       const media = await readMedia(file);
       if (media.kind === 'state') {
         await restoreSession(await decodeSession(media.bytes));
@@ -240,6 +241,7 @@ async function main(): Promise<void> {
       const game = bundledGames.find((entry) => entry.file.split('/').pop() === file.name);
       showDisk(drive, disk, game?.title ?? titleFromFileName(file.name), hasSavedChanges);
       diskPanel.markSetDisk(drive, file.name);
+      if (newGame) trackGameLoaded('appleii', game?.title);
     };
 
     /** Files dropped or chosen together: every disk in them gets a place in the Swap menus, and the first goes in. */
@@ -248,7 +250,7 @@ async function main(): Promise<void> {
       if (chosen.length > 1) files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
       const first = firstDisk(files);
       diskPanel.setZipFiles(files.length > 1 ? files : []);
-      await openDisk(first, drive);
+      await openDisk(first, drive, true);
     };
 
     const diskPanel = new DiskPanel(requireElement('#disk-panel'), {
